@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#f4f6f8" />
+    <title>Noboride · Same road. Clearer answers.</title>
+    <link rel="stylesheet" href="/leaflet.css" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/leaflet.js" defer></script>
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="/" aria-label="Noboride home"
+        ><span class="brand-mark">↝</span
+        ><span>Noboride<small>SAME ROAD. CLEARER ANSWERS.</small></span></a
+      >
+      <div class="header-right">
+        <span class="local"><i></i>Local workspace</span
+        ><button id="help-button" class="icon-button" aria-label="Help">
+          ?</button
+        ><button id="settings-button" class="button small">
+          Analysis settings
+        </button>
+      </div>
+    </header>
+    <aside>
+      <div class="sidebar-title">
+        <h2>Your rides <span id="ride-count">0</span></h2>
+        <button class="icon-button" id="add-ride" aria-label="Import rides">
+          +
+        </button>
+      </div>
+      <div id="drop-zone" class="drop-zone">
+        <span class="upload-symbol">↥</span
+        ><strong>Bring your rides together</strong>
+        <p>Drop FIT, TCX, GPX or a Garmin ZIP</p>
+        <button id="choose-files" class="button small">Choose files</button>
+      </div>
+      <input
+        type="file"
+        id="files"
+        multiple
+        accept=".fit,.gpx,.tcx,.zip,.gz"
+        hidden
+      /><input
+        id="filter"
+        type="search"
+        placeholder="Find a ride or bike…"
+        aria-label="Filter rides"
+      />
+      <div class="selection-line">
+        <span id="included-count">0 included</span
+        ><button id="include-shown" class="text-button">Include shown</button
+        ><button id="clear-rides" class="text-button">Clear</button>
+      </div>
+      <div id="ride-list" class="ride-list"></div>
+      <div class="sidebar-footer">
+        <button id="demo" class="text-button">↗ Load sample rides</button
+        ><a href="/api/backup" class="text-button"
+          >↓ Download workspace backup</a
+        ><button id="restore-button" class="text-button">
+          ↥ Restore a backup</button
+        ><input id="restore-file" type="file" accept=".json,.gz" hidden />
+      </div>
+    </aside>
+    <main>
+      <div class="page-heading">
+        <div class="eyebrow">THE COMPARISON WORKSPACE</div>
+        <h1>Find where the difference happened.</h1>
+        <p>Choose rides. Mark the same road. Compare what changed.</p>
+      </div>
+      <div id="messages" aria-live="polite"></div>
+      <details id="import-report" class="report" hidden>
+        <summary id="report-title"></summary>
+        <div id="report-content"></div>
+      </details>
+      <section id="settings" class="panel" hidden>
+        <div class="section-title">
+          <div>
+            <h2>Analysis settings</h2>
+            <p>Explicit choices applied consistently to every selected ride.</p>
+          </div>
+        </div>
+        <div class="settings-grid">
+          <label
+            >Display units<select id="units">
+              <option value="imperial">Miles / feet / mph</option>
+              <option value="metric">Kilometers / meters / km/h</option>
+            </select></label
+          ><label
+            >GPS gate radius<select id="radius">
+              <option>10</option>
+              <option>20</option>
+              <option selected>35</option>
+              <option>50</option>
+              <option>75</option>
+              <option>100</option></select
+            ><small>Meters from the track to each endpoint</small></label
+          ><label
+            >Level-road threshold<select id="grade-threshold">
+              <option>0.5</option>
+              <option selected>1</option>
+              <option>2</option>
+              <option>3</option></select
+            ><small>± percent grade</small></label
+          ><label
+            >Moving threshold<select id="moving-threshold">
+              <option>0.5</option>
+              <option selected>1</option>
+              <option>1.5</option>
+              <option>2</option></select
+            ><small>Meters per second; 1 m/s ≈ 2.24 mph</small></label
+          ><label
+            >Recording-gap threshold<select id="gap">
+              <option>15</option>
+              <option selected>30</option>
+              <option>60</option>
+              <option>120</option></select
+            ><small>Seconds between observations</small></label
+          >
+        </div>
+      </section>
+      <section id="welcome" class="panel welcome" hidden>
+        <div class="empty-symbol">⌁</div>
+        <h2>Your next ride deserves a closer look.</h2>
+        <p>
+          Import original Garmin activity files, then compare climbs, descents
+          and repeated laps at matching GPS endpoints.
+        </p>
+        <button id="welcome-import" class="button primary">
+          Import Garmin files
+        </button>
+        <p class="subtle">
+          Or load the sample rides on the left. All sample data is synthetic.<br />Original
+          FIT is best. Garmin activity-list CSVs contain no GPS track.
+        </p>
+      </section>
+      <div id="workspace" hidden>
+        <div id="summary" class="summary-grid"></div>
+        <section class="panel studio">
+          <div class="section-title">
+            <div>
+              <div class="eyebrow">01 / DEFINE THE ROAD</div>
+              <h2>Section studio</h2>
+              <p>
+                Move the markers, click the map, or drag across the elevation
+                profile.
+              </p>
+            </div>
+            <select id="scope" aria-label="Saved road section"></select>
+          </div>
+          <div class="studio-controls">
+            <label
+              >Reference ride<select
+                id="reference"
+                aria-label="Reference ride"
+              ></select
+            ></label>
+            <div class="grade-control">
+              <label for="grade-window"
+                >Grade window
+                <strong id="grade-window-value">75 m</strong></label
+              ><input
+                id="grade-window"
+                type="range"
+                min="10"
+                max="300"
+                step="5"
+                value="75"
+              /><span>Shorter: more detail · longer: less noise</span>
+            </div>
+          </div>
+          <div class="studio-grid">
+            <div class="map-column">
+              <div class="map-toolbar">
+                <div class="segmented">
+                  <button id="set-start">◎ Set start</button
+                  ><button id="set-end">⚑ Set end</button>
+                </div>
+                <label class="tile-toggle"
+                  ><input type="checkbox" id="tiles" />Street map</label
+                ><button id="fit-map" class="text-button">Fit</button>
+              </div>
+              <div
+                id="map"
+                aria-label="Map of rides and section endpoints"
+              ></div>
+              <p id="map-hint" class="map-hint">
+                Routes only · enable Street map to load online map tiles.
+              </p>
+            </div>
+            <div class="profile-column">
+              <div id="profile"></div>
+              <div class="endpoint start">
+                <div><strong>Start</strong><span id="start-label"></span></div>
+                <input
+                  id="start-range"
+                  type="range"
+                  min="0"
+                  max="1"
+                  aria-label="Start position along reference ride"
+                />
+                <div class="coordinate-row">
+                  <input
+                    id="start-coordinate"
+                    aria-label="Start GPS coordinates"
+                    placeholder="Latitude, longitude"
+                  /><button id="snap-start" class="text-button">
+                    Snap to ride
+                  </button>
+                </div>
+              </div>
+              <div class="endpoint end">
+                <div><strong>End</strong><span id="end-label"></span></div>
+                <input
+                  id="end-range"
+                  type="range"
+                  min="1"
+                  max="2"
+                  aria-label="End position along reference ride"
+                />
+                <div class="coordinate-row">
+                  <input
+                    id="end-coordinate"
+                    aria-label="End GPS coordinates"
+                    placeholder="Latitude, longitude"
+                  /><button id="snap-end" class="text-button">
+                    Snap to ride
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="save-row">
+            <input
+              id="section-name"
+              aria-label="Section name"
+              value="Main climb"
+              maxlength="120"
+            /><button id="save-section" class="button primary">
+              + Save section</button
+            ><button id="delete-section" class="text-button danger" hidden>
+              Delete section</button
+            ><span
+              >Saved sections may overlap; they are compared
+              independently.</span
+            >
+          </div>
+        </section>
+        <section class="panel">
+          <div class="section-title">
+            <div>
+              <div class="eyebrow">02 / COMPARE MATCHING PASSES</div>
+              <h2>What changed on this road?</h2>
+              <p>
+                Same endpoints, same direction. Each repeated lap gets its own
+                row.
+              </p>
+            </div>
+            <button id="export" class="button small">↓ Export CSV</button>
+          </div>
+          <div class="baseline-row">
+            <label
+              >Baseline pass<select
+                id="baseline"
+                aria-label="Baseline pass"
+              ></select
+            ></label>
+            <p>
+              Negative Δ means faster. GPS offsets show start / end miss
+              distance.
+            </p>
+          </div>
+          <div id="matches" class="table-scroll"></div>
+          <p class="data-note" id="timing-note"></p>
+          <div id="unmatched"></div>
+          <div class="chart-heading">
+            <div>
+              <h3>Same road, aligned</h3>
+              <p>Hover to locate the corresponding point on the map.</p>
+            </div>
+            <select id="metric" aria-label="Comparison metric">
+              <option value="ele">Relative elevation</option>
+              <option value="speed">Speed</option>
+              <option value="hr">Heart rate</option>
+              <option value="cad">Cadence</option>
+              <option value="power">Recorded power</option>
+              <option value="grade">Grade</option>
+              <option value="delta">Time behind baseline</option>
+            </select>
+          </div>
+          <div id="comparison-chart"></div>
+          <div id="legend" class="legend"></div>
+        </section>
+        <section id="budget-panel" class="panel" hidden>
+          <div class="section-title">
+            <div>
+              <div class="eyebrow">03 / EXPLAIN THE TIME DIFFERENCE</div>
+              <h2>Climbs, descents, or somewhere else?</h2>
+              <p>
+                One reference elevation profile defines terrain for both passes.
+              </p>
+            </div>
+            <label
+              >Compare with baseline<select
+                id="budget-comparison"
+                aria-label="Time breakdown comparison"
+              ></select
+            ></label>
+          </div>
+          <div id="budget"></div>
+          <p class="data-note">
+            Approximate attribution: tracks are aligned by distance progress
+            between matching GPS endpoints. Internal boundaries may shift with
+            sensor/GPS distance errors. All categories add to elapsed time.
+            Heart rate alone does not establish equal effort.
+          </p>
+        </section>
+        <section class="panel">
+          <div class="section-title">
+            <div>
+              <h3>Whole-ride context</h3>
+              <p>
+                Device times, bike setup and observations help explain a result.
+              </p>
+            </div>
+          </div>
+          <div id="context" class="context-grid"></div>
+        </section>
+      </div>
+      <footer>
+        Noboride · Local analysis, explicit assumptions.<span
+          >No account. No uploads to a fitness service.</span
+        >
+      </footer>
+    </main>
+    <dialog id="help-dialog">
+      <div class="modal-head">
+        <h2>A better answer to “where did I get faster?”</h2>
+        <button
+          class="icon-button"
+          data-close="help-dialog"
+          aria-label="Close help"
+        >
+          ×
+        </button>
+      </div>
+      <ol class="help-list">
+        <li>
+          <strong>Import original activity files.</strong> FIT preserves the
+          most sensors; TCX and timed GPX also work. ZIPs can contain nested
+          activity archives. Activity-list CSV and summary JSON cannot
+          reconstruct a route.
+        </li>
+        <li>
+          <strong>Include rides; choose a reference.</strong> The reference
+          defines the road, elevation and endpoints. It need not itself be
+          included.
+        </li>
+        <li>
+          <strong>Mark the road.</strong> Drag across the profile, move S/E
+          markers, click “Set start/end”, or enter GPS coordinates. Matching
+          follows the same direction and checks ordered route shape.
+        </li>
+        <li>
+          <strong>Inspect each pass.</strong> Repeated laps become separate
+          rows. “Adjust” lets you select a pass manually when GPS is noisy. Save
+          a named section to retain its manual overrides.
+        </li>
+        <li>
+          <strong>Explain the difference.</strong> Compare elapsed/moving time,
+          HR, cadence and power where recorded. Adjust the grade window to
+          expose short ramps or reduce noise.
+        </li>
+      </ol>
+      <p>
+        Record gearing, standing effort, wind, tires, brake drag and saddle
+        changes in ride notes. These cannot be inferred reliably from GPS or HR.
+      </p>
+      <p>
+        Data stays in the local SQLite database. Online street tiles are
+        optional; enabling them sends map-tile requests to OpenStreetMap. Your
+        GPS tracks are included in workspace backups.
+      </p>
+      <p>See README.md and docs/ANALYSIS.md for methods and limits.</p>
+    </dialog>
+    <dialog id="notes-dialog">
+      <form id="notes-form">
+        <div class="modal-head">
+          <h2>Ride setup & observations</h2>
+          <button
+            type="button"
+            class="icon-button"
+            data-close="notes-dialog"
+            aria-label="Close notes"
+          >
+            ×
+          </button>
+        </div>
+        <label>Ride name<input id="note-name" maxlength="160" required /></label
+        ><label>Bike<input id="note-bike" maxlength="150" /></label
+        ><label
+          >Chainring / rear cog / gearing<input
+            id="note-gearing"
+            maxlength="250" /></label
+        ><label
+          >Wind, weather, tires & surface<input
+            id="note-conditions"
+            maxlength="500" /></label
+        ><label
+          >Observations<textarea
+            id="note-notes"
+            rows="4"
+            maxlength="6000"
+            placeholder="Standing on the final ramp, saddle changes, brake drag, perceived effort…"
+          ></textarea>
+        </label>
+        <div class="button-row">
+          <button type="button" id="delete-ride" class="button danger">
+            Delete ride</button
+          ><button class="button primary" type="submit">Save notes</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="manual-dialog" class="wide">
+      <div class="modal-head">
+        <h2 id="manual-title">Adjust pass</h2>
+        <button
+          class="icon-button"
+          data-close="manual-dialog"
+          aria-label="Close adjustment"
+        >
+          ×
+        </button>
+      </div>
+      <p>
+        Select the same road manually. This replaces automatic matches for this
+        ride and section until reset. Save the section to preserve it in a
+        backup.
+      </p>
+      <div id="manual-map"></div>
+      <div id="manual-profile"></div>
+      <label>Start <input id="manual-start" type="range" min="0" /></label
+      ><label>End <input id="manual-end" type="range" min="1" /></label>
+      <p id="manual-description"></p>
+      <div class="button-row">
+        <button id="reset-manual" class="button">Reset to automatic</button
+        ><button id="save-manual" class="button primary">
+          Use this manual pass
+        </button>
+      </div>
+    </dialog>
+  </body>
+</html>
