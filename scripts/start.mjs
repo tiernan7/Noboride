@@ -20,10 +20,14 @@ if (
   });
   if (result.status !== 0) process.exit(result.status || 1);
 }
-const child = spawn(process.execPath, ["server.mjs"], {
-  cwd: root,
-  stdio: "inherit",
-  env: process.env,
-});
+const child = spawn(
+  process.execPath,
+  ["server.mjs", ...process.argv.slice(2)],
+  {
+    cwd: root,
+    stdio: "inherit",
+    env: process.env,
+  },
+);
 for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => child.kill(sig));
 child.on("exit", (code) => process.exit(code || 0));

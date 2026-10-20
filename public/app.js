@@ -9,11 +9,10 @@ import {
   atProgress,
   lowerBound,
   summarize,
-  findMatches,
-  manualMatch,
   terrainBudget,
   deltaCurve,
 } from "/analysis.mjs";
+import { createComparisonWorkspace } from "/workspace.js";
 const $ = (id) => document.getElementById(id),
   esc = (v) =>
     String(v ?? "").replace(
@@ -29,29 +28,26 @@ const $ = (id) => document.getElementById(id),
     );
 const state = {
   rides: [],
-  segments: [],
   settings: { ...DEFAULTS },
   selected: [],
   referenceId: "",
   start: 0,
   end: 1,
-  scope: "full",
-  overrides: {},
   baseline: "",
   comparison: "",
   metric: "ele",
-  tool: null,
   matches: [],
   stats: new Map(),
   budgets: new Map(),
   canonical: [],
   busy: false,
-  manual: null,
   notesId: "",
   chartData: [],
 };
 const loaded = new Map(),
   pending = new Map();
+let comparisonWorkspace,
+  rideRename = null;
 let settingsTimeout,
   hoverPoint = null,
   profileDrag = null;
@@ -126,6 +122,7 @@ async function task(label, fn) {
   document.body.classList.add("working");
   try {
     await fn();
+    if (comparisonWorkspace) await comparisonWorkspace.save();
     message("");
   } catch (e) {
     message(e.message, true);
@@ -150,9 +147,9 @@ async function getRide(id) {
   return promise;
 }
 async function refresh(initial = false) {
+  const hadRides = state.rides.length > 0;
   const v = await api("/api/workspace");
   state.rides = v.rides;
-  state.segments = v.segments;
   state.settings = v.settings;
   let prior = state.selected;
   if (initial) {
@@ -171,46 +168,26 @@ async function refresh(initial = false) {
   state.selected = Array.isArray(prior)
     ? prior.filter((id) => state.rides.some((r) => r.id === id))
     : state.rides.slice(0, 3).map((r) => r.id);
-  if (!state.selected.length && state.rides.length && !initial)
+  if (!state.selected.length && state.rides.length && !initial && !hadRides)
     state.selected = state.rides.slice(0, 3).map((r) => r.id);
   await Promise.all(state.selected.map(getRide));
-  if (
-    !state.referenceId ||
-    !state.rides.some((r) => r.id === state.referenceId)
-  ) {
-    const candidate =
-      [...included()].sort((a, b) => a.points[0].t - b.points[0].t)[0] ||
-      (state.rides.length ? await getRide(state.rides[0].id) : null);
-    if (candidate) {
-      state.referenceId = candidate.id;
-      state.start = 0;
-      state.end = candidate.points.length - 1;
-      state.scope = "full";
-      state.overrides = {};
-    }
-  }
+  await comparisonWorkspace.load(v.comparisons, initial);
   persistSelection();
   render();
 }
 function compute() {
   const r = ref();
-  if (!r) {
-    state.canonical = [];
-    state.matches = [];
-    return;
+  if (r) {
+    state.start = Math.max(0, Math.min(state.start, r.points.length - 2));
+    state.end = Math.min(
+      r.points.length - 1,
+      Math.max(state.start + 1, state.end),
+    );
   }
-  state.start = Math.max(0, Math.min(state.start, r.points.length - 2));
-  state.end = Math.min(
-    r.points.length - 1,
-    Math.max(state.start + 1, state.end),
-  );
-  state.canonical = r.points.slice(state.start, state.end + 1);
-  state.matches = included().flatMap((ride) => {
-    const o = state.overrides[ride.id];
-    return o
-      ? [manualMatch(ride, o.start, o.end)]
-      : findMatches(ride, state.canonical, state.settings.matchRadius);
-  });
+  state.canonical =
+    comparisonWorkspace.roadPoints() ||
+    (r ? r.points.slice(state.start, state.end + 1) : []);
+  state.matches = comparisonWorkspace.matches();
   state.stats = new Map(
     state.matches.map((m) => [m.id, summarize(m.points, state.settings)]),
   );
@@ -234,22 +211,48 @@ function compute() {
       "";
 }
 function render() {
+  if (!state.selected.includes(state.referenceId)) {
+    const candidate = [...included()].sort(
+      (a, b) => a.points[0].t - b.points[0].t,
+    )[0];
+    state.referenceId = candidate?.id || "";
+    state.start = 0;
+    state.end = candidate ? candidate.points.length - 1 : 1;
+  }
   compute();
   renderRides();
   renderSettings();
   $("welcome").hidden = !!state.rides.length;
   $("workspace").hidden = !state.rides.length;
   renderControls();
+  comparisonWorkspace.render();
   if (ref()) {
-    renderSummary();
     renderProfile();
     renderEndpoints();
-    renderMatches();
-    renderComparison();
-    renderBudget();
-    renderContext();
-    mainMap.update(included(), state.matches, ref(), state.start, state.end);
+    mainMap.update(
+      [ref()],
+      comparisonWorkspace.sourceStretches(),
+      ref(),
+      state.start,
+      state.end,
+    );
+  } else {
+    $("profile").replaceChildren();
+    for (const endpoint of ["start", "end"]) {
+      $(`${endpoint}-label`).textContent = "—";
+      $(`${endpoint}-coordinate`).value = "";
+    }
+    mainMap.update([], [], null, 0, 0);
+    mainMap.highlight(null);
   }
+  if (state.canonical.length > 1) renderSummary();
+  else
+    $("summary").textContent =
+      "Include a source ride, select a stretch, and add it to this comparison.";
+  renderMatches();
+  renderComparison();
+  renderBudget();
+  renderContext();
 }
 function renderRides() {
   $("ride-count").textContent = state.rides.length;
@@ -261,7 +264,7 @@ function renderRides() {
   $("ride-list").innerHTML = filtered
     .map(
       (r) =>
-        `<article class="ride-card ${state.selected.includes(r.id) ? "included" : ""}"><label class="ride-toggle"><input type="checkbox" data-include="${esc(r.id)}" ${state.selected.includes(r.id) ? "checked" : ""}><span class="ride-dot" style="background:${state.selected.includes(r.id) ? color(r.id) : "#b2bdc8"}"></span><span><strong>${esc(r.name)}</strong><small>${esc(date(r.date))} ${r.demo ? '<b class="demo-pill">DEMO</b>' : ""}</small></span></label><div class="ride-stats"><span>${r.overview ? dist(r.overview.distance, 1) : ""}</span><span>${r.overview ? fmtTime(r.overview.elapsed) : ""}</span><button class="text-button" data-notes="${esc(r.id)}">Notes</button></div>${r.notes.bike ? `<div class="bike-tag">↝ ${esc(r.notes.bike)}</div>` : ""}</article>`,
+        `<article class="ride-card ${state.selected.includes(r.id) ? "included" : ""}"><div class="ride-heading"><label class="ride-toggle"><input type="checkbox" aria-label="Include ${esc(r.name)}" data-include="${esc(r.id)}" ${state.selected.includes(r.id) ? "checked" : ""}><span class="ride-dot" style="background:${state.selected.includes(r.id) ? color(r.id) : "#b2bdc8"}"></span></label><div class="ride-identity">${rideRename?.id === r.id ? `<form data-ride-name-form="${esc(r.id)}"><label>Activity name<input data-ride-name-input value="${esc(rideRename.draft)}" maxlength="160" required></label><button class="text-button" type="submit">Save</button><button class="text-button" type="button" data-ride-name-cancel>Cancel</button><small data-ride-name-error role="alert">${esc(rideRename.error || "")}</small></form>` : `<button class="ride-name" data-ride-rename="${esc(r.id)}" title="Rename activity">${esc(r.name)}</button>`}<small>${esc(date(r.date))} ${r.demo ? '<b class="demo-pill">DEMO</b>' : ""}</small></div></div><div class="ride-stats"><span>${r.overview ? dist(r.overview.distance, 1) : ""}</span><span>${r.overview ? fmtTime(r.overview.elapsed) : ""}</span><button class="text-button" data-notes="${esc(r.id)}">Notes</button></div>${r.notes.bike ? `<div class="bike-tag">↝ ${esc(r.notes.bike)}</div>` : ""}</article>`,
     )
     .join("");
 }
@@ -276,29 +279,29 @@ function renderSettings() {
     $(id).value = state.settings[k];
   $("grade-window").value = state.settings.gradeWindow;
   $("grade-window-value").textContent = `${state.settings.gradeWindow} m`;
+  $("suggestion-overlap").value = state.settings.suggestionOverlap;
+  $("suggestion-overlap-value").textContent =
+    `${state.settings.suggestionOverlap}%`;
 }
 function renderControls() {
-  $("reference").innerHTML = state.rides
-    .map(
-      (r) =>
-        `<option value="${esc(r.id)}">${esc(r.name)} · ${esc(date(r.date))}</option>`,
-    )
-    .join("");
-  $("reference").value = state.referenceId;
-  $("scope").innerHTML =
-    '<option value="full">Full reference route</option>' +
-    (state.scope === "draft"
-      ? '<option value="draft">Unsaved selection</option>'
-      : "") +
-    state.segments
-      .map((s) => `<option value="${esc(s.id)}">${esc(s.name)}</option>`)
-      .join("");
-  $("scope").value = state.scope;
-  $("delete-section").hidden = !state.segments.some(
-    (s) => s.id === state.scope,
-  );
-  $("set-start").classList.toggle("active", state.tool === "start");
-  $("set-end").classList.toggle("active", state.tool === "end");
+  $("ride-tabs").innerHTML =
+    state.rides
+      .filter((r) => state.selected.includes(r.id))
+      .map(
+        (r) =>
+          `<button role="tab" aria-selected="${r.id === state.referenceId}" tabindex="${r.id === state.referenceId ? 0 : -1}" aria-controls="source-editor" data-source-ride="${esc(r.id)}" class="ride-tab">${esc(r.name)}<small>${esc(date(r.date))}</small></button>`,
+      )
+      .join("") ||
+    '<p class="subtle">Include rides from the library to browse them here.</p>';
+  for (const id of [
+    "start-range",
+    "end-range",
+    "start-coordinate",
+    "end-coordinate",
+    "snap-start",
+    "snap-end",
+  ])
+    $(id).disabled = !ref();
 }
 function baseline() {
   return state.matches.find((m) => m.id === state.baseline);
@@ -307,22 +310,26 @@ function comparison() {
   return state.matches.find((m) => m.id === state.comparison);
 }
 function renderSummary() {
-  const s = summarize(state.canonical, state.settings),
-    b = baseline(),
+  const b = baseline(),
     c = comparison(),
+    s = summarize(b?.points || state.canonical, state.settings),
     gain =
       b && c
         ? state.stats.get(b.id).elapsed - state.stats.get(c.id).elapsed
         : null;
   const cards = [
-    ["Matched passes", state.matches.length, `from ${included().length} rides`],
     [
-      "Selected road",
-      dist(s.distance),
-      state.scope === "full" ? "Full reference route" : "GPS-matched section",
+      "Comparison stretches",
+      state.matches.length,
+      `from ${new Set(state.matches.map((m) => m.rideId)).size} rides`,
     ],
     [
-      "Reference grade",
+      b ? "Baseline distance" : "Selection distance",
+      dist(s.distance),
+      b ? "Current baseline stretch" : "Source selection · add it to begin",
+    ],
+    [
+      b ? "Baseline grade" : "Selection grade",
       `${num(s.grade, 1)}%`,
       `Peak ${num(s.maxGrade, 1)}% over ${state.settings.gradeWindow} m`,
     ],
@@ -346,9 +353,9 @@ function renderSummary() {
 function changeRange(start, end) {
   state.start = start;
   state.end = end;
-  state.scope = "draft";
-  state.overrides = {};
+  comparisonWorkspace.selectionChanged();
   render();
+  comparisonWorkspace.soon();
 }
 function renderEndpoints() {
   const r = ref();
@@ -382,7 +389,6 @@ function selectOnMap(ll, endpoint) {
     );
     return;
   }
-  state.tool = null;
   changeRange(
     endpoint === "start" ? i : state.start,
     endpoint === "end" ? i : state.end,
@@ -397,27 +403,10 @@ class RouteMap {
     L.control.zoom({ position: "bottomright" }).addTo(this.map);
     this.layers = L.layerGroup().addTo(this.map);
     this.hover = L.layerGroup().addTo(this.map);
-    this.tile = null;
     this.key = "";
     this.bounds = null;
     this.onSelect = onSelect;
-    this.map.on("click", (e) => onSelect(e.latlng, state.tool));
     new ResizeObserver(() => this.map.invalidateSize()).observe($(id));
-  }
-  tiles(on) {
-    if (on && !this.tile)
-      this.tile = L.tileLayer(
-        "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-        {
-          maxZoom: 19,
-          attribution:
-            '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a>',
-        },
-      ).addTo(this.map);
-    else if (!on && this.tile) {
-      this.map.removeLayer(this.tile);
-      this.tile = null;
-    }
   }
   update(rides, matches, reference, start, end) {
     this.layers.clearLayers();
@@ -447,14 +436,19 @@ class RouteMap {
       }),
     );
     for (const m of matches) {
-      add(m.points, { color: color(m.rideId), weight: 5, opacity: 0.9 });
+      add(m.points, {
+        color: color(m.rideId),
+        weight: m.editing ? 9 : 6,
+        opacity: 0.8,
+        className: m.number ? "saved-stretch-route" : "",
+      });
       for (const [p, label] of [
         [m.points[0], "Start"],
         [m.points.at(-1), "End"],
       ])
         if (hasGPS(p)) {
           const tip = document.createElement("span");
-          tip.textContent = `${rideName(m.rideId)} · pass ${m.pass} · ${label}`;
+          tip.textContent = `${rideName(m.rideId)} · ${m.number ? `stretch ${m.number}` : `pass ${m.pass}`} · ${label}`;
           L.circleMarker([p.lat, p.lon], {
             radius: 5,
             color: "white",
@@ -489,7 +483,10 @@ class RouteMap {
             iconAnchor: [14, 14],
           }),
         }).addTo(this.layers);
-        marker.on("dragend", () => this.onSelect(marker.getLatLng(), type));
+        marker.on("dragend", () => {
+          const ll = marker.getLatLng();
+          this.onSelect({ lat: ll.lat, lon: ll.lng }, type);
+        });
       }
     }
     const key = rides.map((r) => r.id).join(":") + ":" + reference?.id;
@@ -522,7 +519,6 @@ class RouteMap {
 const mainMap = new RouteMap("map", (ll, type) => {
   if (type) selectOnMap(ll, type);
 });
-let manualMap = null;
 const CH = { w: 780, h: 218, l: 48, r: 16, t: 20, b: 32 };
 function gradeColor(g) {
   return g == null
@@ -624,6 +620,18 @@ function bindProfile(container, points, onRange, onHover) {
 }
 function renderProfile() {
   $("profile").innerHTML = profileHTML(ref().points, state.start, state.end);
+  const saved = comparisonWorkspace.sourceStretches();
+  if (saved.length) {
+    const points = ref().points,
+      length = points.at(-1).d - points[0].d,
+      x = (p) =>
+        CH.l +
+        (length ? (p.d - points[0].d) / length : 0) * (CH.w - CH.l - CH.r);
+    $("profile").insertAdjacentHTML(
+      "beforeend",
+      `<div class="saved-range-profile" aria-label="Saved stretches along this ride"><svg viewBox="0 0 ${CH.w} ${saved.length * 22}" aria-hidden="true">${saved.map((entry, i) => `<g data-saved-range="${esc(entry.id)}"><text x="${CH.l - 8}" y="${i * 22 + 15}" text-anchor="end">${entry.number}</text><line x1="${CH.l}" x2="${CH.w - CH.r}" y1="${i * 22 + 11}" y2="${i * 22 + 11}" stroke="#e3e9ef"/><rect x="${x(entry.points[0])}" y="${i * 22 + 5}" width="${Math.max(2, x(entry.points.at(-1)) - x(entry.points[0]))}" height="12" rx="4" fill="${color(entry.rideId)}" opacity="${entry.editing ? 1 : 0.65}"/></g>`).join("")}</svg></div>`,
+    );
+  }
   bindProfile($("profile"), ref().points, changeRange, (p) =>
     mainMap.highlight(p),
   );
@@ -664,18 +672,13 @@ function renderMatches() {
           const s = state.stats.get(m.id),
             base = m.id === b.id,
             delta = s.elapsed - state.stats.get(b.id).elapsed;
-          return `<tr class="${base ? "baseline" : ""}"><td><strong class="table-ride"><i style="background:${color(m.rideId)}"></i>${esc(rideName(m.rideId))}</strong><small>Pass ${m.pass} · ${dist(s.distance)}${m.manual ? " · manual" : ""}${base ? " · baseline" : ""}</small></td><td class="strong">${fmtTime(s.elapsed)}</td><td class="${delta < 0 ? "positive" : ""}">${base ? "—" : fmtTime(delta, true)}</td><td>${fmtTime(s.moving)}</td><td>${spd(s.speed)} <small>${spdUnit()}</small></td><td>${num(s.hr)} <small>bpm</small></td><td>${num(s.cadence)} <small>rpm</small></td><td title="${m.manual ? "Manual selection: automatic road checks bypassed" : `Max ordered-route offset: ${num(m.routeError, 1)}m${m.gpsBridgeSeconds ? `; GPS gap bridged for geometry checks: ${num(m.gpsBridgeSeconds)} seconds` : ""}`}">${m.manual ? "Manual" : `${Math.round(m.startMiss)} / ${Math.round(m.endMiss)} m`}${!m.manual && m.gpsBridgeSeconds ? `<small>GPS gap: ${num(m.gpsBridgeSeconds)} s</small>` : ""}</td><td><button class="text-button" data-adjust="${esc(m.id)}">Adjust</button></td></tr>`;
+          return `<tr class="${base ? "baseline" : ""}"><td><strong class="table-ride"><i style="background:${color(m.rideId)}"></i>${esc(rideName(m.rideId))}</strong><small>Pass ${m.pass} · ${dist(s.distance)}${m.manual ? " · manual" : ""}${base ? " · baseline" : ""}</small></td><td class="strong">${fmtTime(s.elapsed)}</td><td class="${delta < 0 ? "positive" : ""}">${base ? "—" : fmtTime(delta, true)}</td><td>${fmtTime(s.moving)}</td><td>${spd(s.speed)} <small>${spdUnit()}</small></td><td>${num(s.hr)} <small>bpm</small></td><td>${num(s.cadence)} <small>rpm</small></td><td title="${m.manual ? "Manual selection: automatic road checks bypassed" : `Max ordered-route offset: ${num(m.routeError, 1)}m${m.gpsBridgeSeconds ? `; GPS gap bridged for geometry checks: ${num(m.gpsBridgeSeconds)} seconds` : ""}`}">${m.manual ? "Manual" : `${Math.round(m.startMiss)} / ${Math.round(m.endMiss)} m`}${!m.manual && m.gpsBridgeSeconds ? `<small>GPS gap: ${num(m.gpsBridgeSeconds)} s</small>` : ""}</td><td><button class="text-button" data-entry-edit="${esc(m.id)}">Edit</button></td></tr>`;
         })
         .join("")}</tbody></table>`
-    : '<div class="inline-empty"><h3>No matching passes yet</h3><p>Include a ride, select at least 20 meters, and check that both endpoints have GPS. Try a wider GPS gate radius for noisy tracks.</p></div>';
+    : '<div class="inline-empty"><h3>No stretches in this comparison yet</h3><p>Choose a source ride tab, select at least 20 meters, then add the stretch to this comparison.</p></div>';
   $("timing-note").textContent =
     `Moving time is estimated above ${spd(state.settings.movingThreshold)} ${spdUnit()}, excluding known pauses and recording gaps. It may differ from Garmin. HR/cadence/power averages are time-weighted; absent sensors stay blank.`;
-  const unmatched = included().filter(
-    (r) => !state.matches.some((m) => m.rideId === r.id),
-  );
-  $("unmatched").innerHTML = unmatched.length
-    ? `<div class="unmatched"><strong>Not matched:</strong>${unmatched.map((r) => `<span>${esc(r.name)} <button class="text-button" data-manual-ride="${esc(r.id)}">Select manually</button></span>`).join("")}<p>Both gates, direction and ordered route shape must agree. Manual passes are your judgment and are labeled.</p></div>`
-    : "";
+  $("unmatched").innerHTML = "";
 }
 function renderComparison() {
   const metric = state.metric,
@@ -794,7 +797,10 @@ function renderComparison() {
     cursor.setAttribute("x2", x);
     cursor.setAttribute("opacity", ".5");
     legend(f);
-    mainMap.highlight(atProgress(state.canonical, f));
+    const sourceMatch = state.matches.find(
+      (m) => m.rideId === state.referenceId,
+    );
+    mainMap.highlight(sourceMatch ? atProgress(sourceMatch.points, f) : null);
   };
   svg.onpointerleave = () => {
     $("compare-cursor").setAttribute("opacity", "0");
@@ -805,8 +811,8 @@ function renderComparison() {
 function renderBudget() {
   const b = baseline(),
     c = comparison();
-  $("budget-panel").hidden = !b || !c;
-  if (!b || !c) return;
+  $("budget-panel").hidden = !b || !c || comparisonWorkspace.hasEfforts();
+  if (!b || !c || comparisonWorkspace.hasEfforts()) return;
   $("budget-comparison").innerHTML = state.matches
     .filter((m) => m.id !== b.id)
     .map(
@@ -833,10 +839,17 @@ function renderBudget() {
       })
       .join(
         "",
-      )}</div></div><p class="budget-method">Grade window: ${state.settings.gradeWindow} m · level road: ±${state.settings.gradeThreshold}% · reference: ${esc(rideName(state.referenceId))}</p>`;
+      )}</div></div><p class="budget-method">Grade window: ${state.settings.gradeWindow} m · level road: ±${state.settings.gradeThreshold}% · road profile: ${esc(rideName(comparisonWorkspace.active().road.rideId))}</p>`;
 }
 function renderContext() {
-  $("context").innerHTML = included()
+  const contextRides = [
+    ...new Set(
+      comparisonWorkspace.active()?.entries.map((e) => e.rideId) || [],
+    ),
+  ]
+    .map((id) => loaded.get(id))
+    .filter(Boolean);
+  $("context").innerHTML = contextRides
     .map((r) => {
       const s = summarize(r.points, state.settings);
       return `<article class="context-card"><strong>${esc(r.name)}</strong><dl><dt>Recorded elapsed</dt><dd>${fmtTime(r.deviceElapsed ?? s.elapsed)}</dd><dt>Device timer</dt><dd>${fmtTime(r.deviceTimer)}</dd><dt>Device moving</dt><dd>${fmtTime(r.deviceMoving)}</dd><dt>Average / max HR</dt><dd>${num(s.hr)} / ${num(s.maxHr)} bpm</dd><dt>Power / cadence</dt><dd>${num(s.power)} W / ${num(s.cadence)} rpm</dd><dt>Recording gaps</dt><dd>${fmtTime(s.gaps)}</dd></dl><p>${esc(r.notes.bike || "Bike not noted")}${r.notes.gearing ? " · " + esc(r.notes.gearing) : ""}</p>${r.notes.conditions ? `<p>${esc(r.notes.conditions)}</p>` : ""}${r.notes.notes ? `<p>${esc(r.notes.notes)}</p>` : ""}<button class="text-button" data-notes="${esc(r.id)}">Edit setup and conditions</button>${r.warnings?.length ? `<details><summary>${r.warnings.length} data notes</summary>${r.warnings.map((w) => `<p>${esc(w)}</p>`).join("")}</details>` : ""}</article>`;
@@ -886,49 +899,6 @@ function openNotes(id) {
     $(`note-${k}`).value = k === "name" ? r.name : r.notes[k];
   $("notes-dialog").showModal();
 }
-function openManual(id, start, end) {
-  const r = loaded.get(id);
-  state.manual = {
-    ride: r,
-    start: Math.max(0, start),
-    end: Math.min(r.points.length - 1, end),
-  };
-  $("manual-title").textContent = `Adjust pass · ${r.name}`;
-  $("manual-dialog").showModal();
-  if (!manualMap)
-    manualMap = new RouteMap("manual-map", (ll, type) => {
-      if (!type) return;
-      const m = state.manual,
-        i = nearestIndex(m.ride.points, ll);
-      if (type === "start" && i >= 0 && i < m.end) m.start = i;
-      if (type === "end" && i > m.start) m.end = i;
-      renderManual();
-    });
-  renderManual();
-  setTimeout(() => manualMap.fit(), 0);
-}
-function renderManual() {
-  const m = state.manual;
-  if (!m) return;
-  $("manual-start").max = m.ride.points.length - 2;
-  $("manual-start").value = m.start;
-  $("manual-end").max = m.ride.points.length - 1;
-  $("manual-end").value = m.end;
-  $("manual-profile").innerHTML = profileHTML(m.ride.points, m.start, m.end);
-  bindProfile(
-    $("manual-profile"),
-    m.ride.points,
-    (a, b) => {
-      m.start = a;
-      m.end = b;
-      renderManual();
-    },
-    (p) => manualMap.highlight(p),
-  );
-  manualMap.update([m.ride], [], m.ride, m.start, m.end);
-  $("manual-description").textContent =
-    `${dist(m.ride.points[m.start].d)} → ${dist(m.ride.points[m.end].d)} · ${fmtTime((m.ride.points[m.end].t - m.ride.points[m.start].t) / 1000)} · endpoints ${hasGPS(m.ride.points[m.start]) ? m.ride.points[m.start].lat.toFixed(6) + ", " + m.ride.points[m.start].lon.toFixed(6) : "no GPS"} / ${hasGPS(m.ride.points[m.end]) ? m.ride.points[m.end].lat.toFixed(6) + ", " + m.ride.points[m.end].lon.toFixed(6) : "no GPS"}`;
-}
 const csv = (v) => {
   let s = String(v ?? "");
   if (/^[=+@\-\t\r]/.test(s)) s = "'" + s;
@@ -964,6 +934,12 @@ function exportCSV() {
     "gearing",
     "conditions",
     "notes",
+    "comparison_name",
+    "comparison_entry_id",
+    "entry_kind",
+    "baseline_entry_id",
+    "source_start_index",
+    "source_end_index",
   ];
   const rows = state.matches.map((m) => {
     const r = loaded.get(m.rideId),
@@ -997,6 +973,12 @@ function exportCSV() {
       r.notes.gearing,
       r.notes.conditions,
       r.notes.notes,
+      comparisonWorkspace.active().name || "Untitled comparison",
+      m.id,
+      m.kind,
+      state.baseline,
+      m.startIndex,
+      m.endIndex,
     ]
       .map(csv)
       .join(",");
@@ -1012,6 +994,7 @@ function exportCSV() {
 }
 function settingsChanged() {
   render();
+  comparisonWorkspace.soon();
   clearTimeout(settingsTimeout);
   settingsTimeout = setTimeout(
     () =>
@@ -1059,11 +1042,12 @@ $("include-shown").onclick = () =>
     persistSelection();
     render();
   });
-$("clear-rides").onclick = () => {
-  state.selected = [];
-  persistSelection();
-  render();
-};
+$("clear-rides").onclick = () =>
+  task("Clearing source rides…", async () => {
+    state.selected = [];
+    persistSelection();
+    render();
+  });
 $("demo").onclick = () =>
   task("Loading synthetic demonstration rides…", async () => {
     await api("/api/demo", json("POST"));
@@ -1081,53 +1065,37 @@ $("restore-file").onchange = (e) => {
         headers: { "Content-Type": "application/octet-stream" },
         body: file,
       });
-      await refresh();
+      await refresh(true);
     });
   e.target.value = "";
 };
-$("reference").onchange = (e) =>
-  task("Loading reference ride…", async () => {
-    const r = await getRide(e.target.value);
-    state.referenceId = r.id;
-    state.start = 0;
-    state.end = r.points.length - 1;
-    state.scope = "full";
-    state.overrides = {};
-    render();
-  });
-$("scope").onchange = (e) =>
-  task("Opening road section…", async () => {
-    if (e.target.value === "full") {
-      state.start = 0;
-      state.end = ref().points.length - 1;
-      state.scope = "full";
-      state.overrides = {};
-    } else {
-      const s = state.segments.find((s) => s.id === e.target.value);
-      if (!s) return;
-      await getRide(s.referenceId);
-      state.referenceId = s.referenceId;
-      state.start = s.start;
-      state.end = s.end;
-      state.scope = s.id;
-      state.overrides = structuredClone(s.overrides || {});
-      $("section-name").value = s.name;
-    }
-    render();
-  });
+$("ride-tabs").onclick = (e) => {
+  const tab = e.target.closest("[data-source-ride]");
+  if (tab)
+    task("Opening source ride…", () =>
+      comparisonWorkspace.browseRide(tab.dataset.sourceRide),
+    );
+};
+$("ride-tabs").onkeydown = (e) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+  const tabs = [...$("ride-tabs").querySelectorAll("[role=tab]")];
+  if (!tabs.length) return;
+  const current = tabs.indexOf(document.activeElement);
+  const next =
+    e.key === "Home"
+      ? 0
+      : e.key === "End"
+        ? tabs.length - 1
+        : (current + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) %
+          tabs.length;
+  e.preventDefault();
+  tabs[next].click();
+};
 $("start-range").oninput = (e) =>
   changeRange(Math.min(+e.target.value, state.end - 1), state.end);
 $("end-range").oninput = (e) =>
   changeRange(state.start, Math.max(+e.target.value, state.start + 1));
 for (const endpoint of ["start", "end"]) {
-  $(`set-${endpoint}`).onclick = () => {
-    state.tool = state.tool === endpoint ? null : endpoint;
-    renderControls();
-    $("map").classList.toggle("selecting", !!state.tool);
-    $("map-hint").textContent = state.tool
-      ? `Click near the ${state.tool} on the reference ride.`
-      : "Drag a marker or select a range on the profile.";
-  };
   const snap = () => {
     const raw = $(`${endpoint}-coordinate`).value.split(",");
     const coords = raw.map(Number);
@@ -1148,12 +1116,6 @@ for (const endpoint of ["start", "end"]) {
     if (e.key === "Enter") snap();
   };
 }
-$("tiles").onchange = (e) => {
-  mainMap.tiles(e.target.checked);
-  $("map-hint").textContent = e.target.checked
-    ? "Street tiles use OpenStreetMap. Activity files stay local."
-    : "Routes only · enable Street map to load online map tiles.";
-};
 $("fit-map").onclick = () => mainMap.fit();
 $("grade-window").oninput = (e) => {
   state.settings.gradeWindow = +e.target.value;
@@ -1171,66 +1133,95 @@ for (const [id, key] of [
     settingsChanged();
   };
 $("settings-button").onclick = () => {
-  $("settings").hidden = !$("settings").hidden;
+  renderSettings();
+  $("settings").showModal();
+};
+$("suggestion-overlap").oninput = (event) => {
+  state.settings.suggestionOverlap = +event.target.value;
+  settingsChanged();
 };
 $("help-button").onclick = () => $("help-dialog").showModal();
 document
   .querySelectorAll("[data-close]")
   .forEach((b) => (b.onclick = () => $(b.dataset.close).close()));
-$("save-section").onclick = () =>
-  task("Saving road section…", async () => {
-    const previous = state.segments.find((s) => s.id === state.scope),
-      s = await api(
-        "/api/segments",
-        json("POST", {
-          id: previous?.id,
-          name: $("section-name").value,
-          referenceId: state.referenceId,
-          start: state.start,
-          end: state.end,
-          overrides: state.overrides,
-        }),
-      );
-    state.segments = state.segments.filter((x) => x.id !== s.id).concat(s);
-    state.scope = s.id;
-    renderControls();
-  });
-$("delete-section").onclick = () => {
-  if (confirm("Delete this saved section? Ride data will be kept."))
-    task("Deleting section…", async () => {
-      await api(`/api/segments/${state.scope}`, json("DELETE"));
-      state.segments = state.segments.filter((s) => s.id !== state.scope);
-      state.scope = "draft";
-      renderControls();
-    });
-};
 $("baseline").onchange = (e) => {
   state.baseline = e.target.value;
   render();
+  comparisonWorkspace.soon();
 };
 $("budget-comparison").onchange = (e) => {
   state.comparison = e.target.value;
   renderSummary();
   renderBudget();
+  comparisonWorkspace.soon();
 };
 $("metric").onchange = (e) => {
   state.metric = e.target.value;
   renderComparison();
+  comparisonWorkspace.soon();
 };
 $("export").onclick = exportCSV;
 window.addEventListener("click", (e) => {
+  const rename = e.target.closest("[data-ride-rename]");
+  if (rename && !state.busy) {
+    const ride = state.rides.find((r) => r.id === rename.dataset.rideRename);
+    rideRename = { id: ride.id, draft: ride.name, error: "" };
+    renderRides();
+    const input = $("ride-list").querySelector("[data-ride-name-input]");
+    input.focus({ preventScroll: true });
+    input.select();
+  }
+  if (e.target.closest("[data-ride-name-cancel]")) {
+    rideRename = null;
+    renderRides();
+  }
   const notes = e.target.closest("[data-notes]");
   if (notes) openNotes(notes.dataset.notes);
-  const adjust = e.target.closest("[data-adjust]");
-  if (adjust) {
-    const m = state.matches.find((m) => m.id === adjust.dataset.adjust);
-    openManual(m.rideId, Math.floor(m.startIndex), Math.ceil(m.endIndex));
+  const edit = e.target.closest("#matches [data-entry-edit]");
+  if (edit)
+    task("Editing comparison stretch…", () =>
+      comparisonWorkspace.editEntry(edit.dataset.entryEdit),
+    );
+});
+$("ride-list").addEventListener("input", (event) => {
+  if (event.target.matches("[data-ride-name-input]") && rideRename)
+    rideRename.draft = event.target.value;
+});
+$("ride-list").addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && rideRename) {
+    event.preventDefault();
+    event.stopPropagation();
+    rideRename = null;
+    renderRides();
   }
-  const manual = e.target.closest("[data-manual-ride]");
-  if (manual) {
-    const r = loaded.get(manual.dataset.manualRide);
-    openManual(r.id, 0, r.points.length - 1);
+});
+$("ride-list").addEventListener("submit", (event) => {
+  const form = event.target.closest("[data-ride-name-form]");
+  if (!form) return;
+  event.preventDefault();
+  const name = form.querySelector("input").value.trim();
+  if (!name) {
+    rideRename.error = "Enter an activity name.";
+    form.querySelector("[data-ride-name-error]").textContent = rideRename.error;
+    return;
   }
+  task("Renaming activity…", async () => {
+    try {
+      const id = form.dataset.rideNameForm;
+      await api(`/api/rides/${id}`, json("PATCH", { name }));
+      if (loaded.has(id)) loaded.get(id).name = name;
+      state.rides.find((ride) => ride.id === id).name = name;
+      rideRename = null;
+      render();
+    } catch (error) {
+      if (rideRename) {
+        rideRename.error = error.message;
+        form.querySelector("[data-ride-name-error]").textContent =
+          error.message;
+      }
+      throw error;
+    }
+  });
 });
 $("notes-form").onsubmit = (e) => {
   e.preventDefault();
@@ -1261,28 +1252,8 @@ $("delete-ride").onclick = () => {
       await api(`/api/rides/${state.notesId}`, json("DELETE"));
       loaded.delete(state.notesId);
       $("notes-dialog").close();
-      await refresh();
+      await refresh(true);
     });
-};
-$("manual-start").oninput = (e) => {
-  state.manual.start = Math.min(+e.target.value, state.manual.end - 1);
-  renderManual();
-};
-$("manual-end").oninput = (e) => {
-  state.manual.end = Math.max(+e.target.value, state.manual.start + 1);
-  renderManual();
-};
-$("save-manual").onclick = () => {
-  const m = state.manual;
-  state.overrides[m.ride.id] = { start: m.start, end: m.end };
-  $("manual-dialog").close();
-  render();
-  message("Manual pass applied. Save the section to retain the adjustment.");
-};
-$("reset-manual").onclick = () => {
-  delete state.overrides[state.manual.ride.id];
-  $("manual-dialog").close();
-  render();
 };
 window.addEventListener("error", (e) =>
   message(`Dashboard error: ${e.message}`, true),
@@ -1290,4 +1261,16 @@ window.addEventListener("error", (e) =>
 window.addEventListener("unhandledrejection", (e) =>
   message(e.reason?.message || String(e.reason), true),
 );
+comparisonWorkspace = createComparisonWorkspace({
+  state,
+  loaded,
+  getRide,
+  api,
+  json,
+  render,
+  task,
+  esc,
+  rideName,
+  persistSelection,
+});
 task("Loading your local workspace…", () => refresh(true));

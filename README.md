@@ -16,19 +16,31 @@ Version 1.0.2. A small local dashboard for Garmin cycling exports. Select rides,
 
 VS Code: **Terminal → Run Build Task** also starts the dashboard. After installation, **F5 → Run Noboride** starts the debugger and opens the browser. macOS/Linux users can run `./start.command`; Windows users can run `start.bat`.
 
-Stop with **Ctrl+C** in the terminal. No separate frontend build or Python environment is needed. The first installation requires internet; the dashboard and route-only map work offline afterward. Street-map tiles are optional.
+Stop with **Ctrl+C** in the terminal. No separate frontend build or Python environment is needed. The first installation requires internet; the dashboard and route-only map work offline afterward.
+
+To use an iPad or iPhone on the same Wi-Fi, run `node server.mjs --host` (or `node scripts/start.mjs --host`). Open the network address printed in the terminal, such as `http://192.168.1.12:4317`, on the other device. Keep the computer and server running; allow incoming connections if your computer's firewall asks. You can bind a specific address with `--host 192.168.1.12` or `--host=192.168.1.12`. `npm start -- --host` also works. Without the flag, access stays on this computer. Wi-Fi mode has no login: devices that can reach the server can view and modify the shared workspace. Use one editing window at a time.
+
+On macOS, `--host` also recognizes and prints the Mac's existing Bonjour address, for example `http://my-mac.local:4317`. This local-network name avoids remembering a changing IP address. To shorten it, edit **System Settings → General → Sharing → Local hostname** and restart Noboride afterward. This changes the Mac's local hostname; Noboride does not change system settings or publish a public domain. Bonjour discovery must be supported by the devices' network; use the printed IP address if name resolution is unavailable.
 
 ## The workflow
 
 1. **Import** original `.fit`, `.tcx`, timed `.gpx`, `.fit.gz` or `.zip` files. Drop several files at once. Nested Garmin activity ZIPs are supported.
-2. **Include** whichever rides belong in a comparison. Filter by ride name, bike or date. Rides are loaded on demand; unselected tracks do not enter analysis.
-3. **Choose a reference ride.** It defines the geometry, terrain and endpoints. You can compare the full loop, or select just a hill, descent, flat or approach.
-4. **Mark the same road.** Drag over the reference elevation chart, use start/end sliders, drag the map's S/E markers, click “Set start/end”, or enter latitude/longitude and snap to the track. Start must occur before end. For repeated laps, use the chart/sliders to choose the desired pass; a map click alone may snap to an earlier visit.
-5. **Compare passes.** Automatic matching checks the GPS gates, direction and ordered route shape. Repeated laps appear separately. Inspect start/end GPS offsets. If a recording doesn't match, use **Select manually**, or **Adjust** an existing pass.
-6. **Save a named section.** Later rides can be matched to it. Saving an existing section updates it; drawing a new range starts an unsaved selection. Manual overrides are kept when the section is saved and included in its backup.
-7. **Choose a baseline**, then compare elevation, speed, HR, cadence, recorded power, grade, or cumulative time behind the baseline. Hovering over the chart shows the corresponding map location and values for each pass.
-8. **Read the terrain time budget.** It separates time differences on climbs, descents and level road, plus slow/paused intervals and recording gaps. This directly addresses “how much faster was downhill?” for a matched loop or section.
+
+   Click an activity's name in **Your rides** to rename it inline. Save with Enter or **Save**; **Cancel** or Escape discards the edit. This display name appears in source tabs, comparisons and CSV exports. Original source filenames and stable import IDs stay linked internally and in workspace backups; raw files do not need to be renamed. Reimporting the same file preserves your chosen name and notes.
+2. **Work in a comparison.** Its name, stretch list and switcher sit at the top. Click its name to rename it inline. Names are unique after whitespace, case and Unicode normalization. **New comparison** is disabled until the current comparison has a stretch; leaving a populated unnamed comparison asks for a name. Existing empty contexts are reused.
+
+   **Delete comparison** removes the active comparison after confirmation and keeps imported rides. You can delete named, unnamed or extra empty comparisons. Deleting the last populated comparison creates a fresh untitled comparison; the sole empty untitled comparison cannot be deleted. A failed save restores the comparison in the interface for retry.
+3. **Include source rides** from the library, then browse their tabs. Filters and **Include shown** control the available tabs. Switching a tab changes only the map/profile editor; it does not replace accepted comparison entries. Removing a ride from the browser does not remove its accepted stretches.
+4. **Select and add a stretch.** Brush the elevation profile, use the start/end sliders, drag the map markers, or expand GPS coordinates and snap to the track. Choose **Add to comparison** to accept the selection. The first stretch defines the shared road for automatic matching. You may add several distinct stretches from the same recording, including repeated laps.
+5. **Review suggestions.** The app checks the selected road against loaded rides, including other passes in the same recording. Preview suggested endpoints, then **Add match**. Gates, direction, route shape and recording continuity are checked. Suggestions are never added silently. You can also select a different road on any source tab and add it as a clearly labeled manually paired effort.
+
+   If you preview a suggestion, trim its boundaries and add that selection, overlapping suggestions are hidden according to **Settings → Hide overlapping suggestions**. This measures shared distance divided by the combined span on the same recording, default 60%. Lower the percentage to hide more suggestions; raise it for closer agreement. Separate laps stay independent. Removing the trimmed stretch makes its original suggestion available again. Endpoint edits remain explicit manual pairings rather than automatically verified matches.
+6. **Inspect existing stretches.** Each source tab lists its accepted stretches in the active comparison. Their ranges appear on the map and in separate numbered rows below the elevation profile, so repeated laps remain distinguishable even where their GPS paths overlap. Select a stretch or choose **Edit** in the comparison list to inspect it in the same editor; **Update stretch** applies changes and **Cancel changes** discards them. **Select another stretch** starts another selection without replacing existing entries. Each ride tab remembers its browsing range across switching and reload. Legacy saved road definitions remain in storage and backups; their separate save/switch controls have been removed from this editor.
+7. **Choose a baseline stretch** in the analysis area, then compare elevation, speed, HR, cadence, recorded power, grade or time behind that entry. Switching contexts restores its entries, source selection, baseline, metric and analysis settings. Charts use distance progress; a map hover locates the first accepted entry belonging to the active source tab, when present.
+8. **Read terrain attribution for verified same-road comparisons.** It separates climbing, descent and level-road time, plus pauses, unknown grade and gaps. The first selected road supplies one terrain profile. Attribution is disabled whenever manually paired efforts are present, since these may be unrelated roads. Their time and sensor comparisons remain available, without implying equal effort.
 9. **Add setup notes** for bike, gearing, wind, tires, standing effort, brake drag or saddle changes. Export the comparison CSV or download a full workspace backup.
+
+The header's **Settings** button opens a compact dialog for overlap percentage, display units, GPS gate radius, level-road threshold, moving threshold and recording-gap threshold. Changes apply immediately and are saved with the active comparison. Choose **Done** or press Escape to close it. The grade window remains directly above the elevation profile.
 
 ## Getting useful Garmin data
 
@@ -54,11 +66,13 @@ The dashboard makes comparisons, not causal claims: equal mean HR does not prove
 
 ## Privacy and persistence
 
-The server listens only on **127.0.0.1**, not your network. Files are decoded locally and normalized tracks/notes/sections are stored in `data/noboride.sqlite`. There is no Garmin login, cloud sync, telemetry, analytics or external font request.
+The server defaults to **127.0.0.1**. The optional `--host` flag listens on network interfaces for access from your own devices; an explicit address restricts the listening interface. Host and Origin checks remain enabled for configured addresses. Files are decoded on the computer running the server and normalized tracks/notes/sections are stored in its `data/noboride.sqlite`. There is no Garmin login, cloud sync, telemetry, analytics or external font request.
 
-The route-only map requires no network. Enabling **Street map** loads OpenStreetMap tiles, which discloses your IP and viewed map area to that service. Normal attribution is displayed; the app does not bulk-download map tiles.
+The map draws your recorded routes locally. It does not request online map tiles or send your IP or viewed map area to a map provider. Browser security policy restricts images and connections to local resources (and embedded image data).
 
-Download a workspace backup before moving folders or computers. It includes GPS tracks, sensors, notes, settings and saved sections. Restore merges rides by stable import ID and updates saved sections/settings; existing ride notes for duplicate IDs are retained. Selected-ride checkboxes are browser-local, not part of the backup. Unsaved manual overrides are temporary.
+Download a workspace backup before moving folders or computers. It includes GPS tracks, sensors, notes, saved sections, comparison contexts and their browser/analysis choices. Restore merges rides and comparisons by stable ID; name collisions between different comparison IDs reject the restore transaction. Existing ride notes for duplicate IDs are retained. Older version 1 backups without comparisons still restore. Legacy browser-local ride selections seed the first comparison when no contexts exist.
+
+Comparisons are stored in an additive SQLite table. On first opening an existing database without it, the app writes a consistent pre-migration backup beside the database as `*.before-comparisons-<timestamp>.sqlite`, then adds the table. Existing ride/section tables and import IDs are unchanged. Backups remain private and excluded from Git. Editing from concurrent browser windows is not coordinated; use one workspace window. Limits are 100 comparisons, 200 entries per comparison and a 2 MiB comparison-save request.
 
 To reset everything, stop the app and move the `data` directory out of the project. Keep that directory if you want your rides to persist. It is excluded from the distributable and `.gitignore`.
 
@@ -96,9 +110,11 @@ Change the port using the `PORT` environment variable, or use `NOBORIDE_DATA_DIR
 server.mjs          Local HTTP API and allowlisted static serving
 lib/import.mjs      FIT / TCX / GPX and ZIP ingestion
 lib/analysis.mjs    Shared pure GPS, timing, grade and comparison functions
+lib/comparisons.mjs Comparison validation, unique names and fractional sample ranges
 lib/store.mjs       SQLite persistence and transactions
 lib/demo.mjs        Synthetic demonstration rides
 public/             Dashboard, charts and map interactions
+public/workspace.js Named comparison contexts, source entries and match suggestions
 scripts/start.mjs   Cross-platform first-run installer and launcher
 AGENTS.md           Architecture, analysis invariants and future-agent workflow
 .vscode/            Start/debug/test configurations
@@ -112,6 +128,5 @@ tests/              Numerical, parser, storage and browser tests
 - Node.js SQLite API: <https://nodejs.org/api/sqlite.html>
 - fast-xml-parser: <https://github.com/NaturalIntelligence/fast-xml-parser>
 - fflate: <https://github.com/101arrowz/fflate>
-- OpenStreetMap tile usage: <https://operations.osmfoundation.org/policies/tiles/>
 
 Noboride source is MIT-licensed (see LICENSE). Dependencies retain their own licenses, including Garmin's FIT SDK license in its installed package. Noboride is an independent tool, not a Garmin product.

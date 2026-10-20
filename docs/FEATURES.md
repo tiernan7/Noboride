@@ -18,3 +18,7 @@ Based on the cycling discussions supplied in the request and the retrieved Septe
 | Can this run in VS Code locally?                                     | Node 24 package, cross-platform launcher, VS Code tasks/debugging, local SQLite, no Garmin authentication        |
 
 Not inferred: gear state without notes, standing vs seated without notes, wind, brake drag, accurate crank power from GPS, physical bike fit, or a causal fitness improvement.
+
+The source editor lists existing stretches from its selected ride within the active comparison, with local map overlays and separate numbered profile rows for overlapping or repeated passes. Ride tabs remember their browsing ranges. Selecting an entry opens it in the same editor; Update/Cancel applies or discards edits. Select another stretch adds a separate entry. Legacy saved-section data remains in backups, without a competing save/switch workflow in the editor.
+
+The dev workspace adds named comparison contexts above the source editor. Source ride tabs supply individually accepted stretches, including multiple passes from one recording. Names can be changed inline; populated unnamed contexts require a name before switching, and empty contexts cannot create another context. Comparison entries, analysis baselines and settings persist locally and travel in workspace backups. Matching suggestions require acceptance. Manually paired different-road efforts are supported without same-road terrain attribution. Broader automatic shared-section discovery remains a proposal in `COMPARISON-DESIGN.md`.

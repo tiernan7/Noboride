@@ -20,9 +20,7 @@
         <span class="local"><i></i>Local workspace</span
         ><button id="help-button" class="icon-button" aria-label="Help">
           ?</button
-        ><button id="settings-button" class="button small">
-          Analysis settings
-        </button>
+        ><button id="settings-button" class="button small">Settings</button>
       </div>
     </header>
     <aside>
@@ -76,14 +74,34 @@
         <summary id="report-title"></summary>
         <div id="report-content"></div>
       </details>
-      <section id="settings" class="panel" hidden>
+      <dialog id="settings" aria-labelledby="settings-title">
         <div class="section-title">
           <div>
-            <h2>Analysis settings</h2>
-            <p>Explicit choices applied consistently to every selected ride.</p>
+            <h2 id="settings-title">Settings</h2>
+            <p>Changes apply immediately and are saved with this comparison.</p>
           </div>
         </div>
         <div class="settings-grid">
+          <label class="suggestion-overlap-control" for="suggestion-overlap"
+            >Hide overlapping suggestions
+            <strong id="suggestion-overlap-value">60%</strong>
+            <input
+              id="suggestion-overlap"
+              type="range"
+              min="10"
+              max="100"
+              step="5"
+              value="60"
+              aria-describedby="suggestion-overlap-help"
+            />
+            <small id="suggestion-overlap-help"
+              >Hide a suggestion when its shared distance with a saved stretch
+              reaches this percentage of their combined distance on the same
+              recording. Lower hides more; 100% requires identical ranges.
+              Separate laps stay distinct. Saved stretches are never
+              removed.</small
+            >
+          </label>
           <label
             >Display units<select id="units">
               <option value="imperial">Miles / feet / mph</option>
@@ -121,6 +139,65 @@
             ><small>Seconds between observations</small></label
           >
         </div>
+        <div class="settings-actions">
+          <button class="button primary" data-close="settings">Done</button>
+        </div>
+      </dialog>
+      <section
+        class="panel comparison-workspace"
+        aria-label="Active comparison"
+      >
+        <div class="comparison-heading">
+          <div>
+            <div class="eyebrow">ACTIVE COMPARISON</div>
+            <button
+              id="comparison-name"
+              class="comparison-name"
+              title="Rename comparison"
+            >
+              Untitled comparison
+            </button>
+            <p id="comparison-count">0 stretches · 0 rides</p>
+          </div>
+          <div class="comparison-navigation">
+            <label for="comparison-switch">Switch comparison</label>
+            <select id="comparison-switch"></select>
+            <button id="new-comparison" class="button" disabled>
+              New comparison
+            </button>
+            <button id="delete-comparison" class="text-button danger" disabled>
+              Delete comparison
+            </button>
+          </div>
+        </div>
+        <form id="comparison-name-editor" hidden>
+          <label for="comparison-name-input">Comparison name</label>
+          <input
+            id="comparison-name-input"
+            maxlength="120"
+            autocomplete="off"
+            aria-describedby="comparison-name-error"
+          />
+          <button class="button primary" type="submit">Save name</button>
+          <button class="text-button" id="comparison-name-cancel" type="button">
+            Cancel
+          </button>
+          <span id="comparison-name-error" role="alert"></span>
+        </form>
+        <div
+          id="comparison-delete-confirm"
+          hidden
+          role="group"
+          aria-label="Confirm comparison deletion"
+        >
+          <p id="comparison-delete-message"></p>
+          <button id="comparison-delete-yes" class="button danger">
+            Delete comparison
+          </button>
+          <button id="comparison-delete-cancel" class="button">Cancel</button>
+        </div>
+        <p id="comparison-status" role="status"></p>
+        <ul id="comparison-entries" aria-label="Comparison stretches"></ul>
       </section>
       <section id="welcome" class="panel welcome" hidden>
         <div class="empty-symbol">⌁</div>
@@ -142,22 +219,24 @@
         <section class="panel studio">
           <div class="section-title">
             <div>
-              <div class="eyebrow">01 / DEFINE THE ROAD</div>
-              <h2>Section studio</h2>
+              <div class="eyebrow">01 / ADD SOURCE STRETCHES</div>
+              <h2>Select a stretch</h2>
               <p>
-                Move the markers, click the map, or drag across the elevation
-                profile.
+                Choose a ride tab, select a range, then add it to this
+                comparison.
               </p>
             </div>
-            <select id="scope" aria-label="Saved road section"></select>
+            <button id="reset-selection" class="text-button">Full ride</button>
           </div>
           <div class="studio-controls">
-            <label
-              >Reference ride<select
-                id="reference"
-                aria-label="Reference ride"
-              ></select
-            ></label>
+            <div>
+              <p class="source-label" id="source-label">Source rides</p>
+              <div
+                id="ride-tabs"
+                role="tablist"
+                aria-labelledby="source-label"
+              ></div>
+            </div>
             <div class="grade-control">
               <label for="grade-window"
                 >Grade window
@@ -172,23 +251,24 @@
               /><span>Shorter: more detail · longer: less noise</span>
             </div>
           </div>
-          <div class="studio-grid">
+          <div
+            id="source-stretches"
+            class="source-stretches"
+            aria-label="Stretches from this ride in the active comparison"
+          ></div>
+          <div
+            class="studio-grid"
+            id="source-editor"
+            role="tabpanel"
+            aria-label="Selected source ride"
+          >
             <div class="map-column">
               <div class="map-toolbar">
-                <div class="segmented">
-                  <button id="set-start">◎ Set start</button
-                  ><button id="set-end">⚑ Set end</button>
-                </div>
-                <label class="tile-toggle"
-                  ><input type="checkbox" id="tiles" />Street map</label
-                ><button id="fit-map" class="text-button">Fit</button>
+                <button id="fit-map" class="text-button">Fit routes</button>
               </div>
-              <div
-                id="map"
-                aria-label="Map of rides and section endpoints"
-              ></div>
+              <div id="map" aria-label="Source ride and selected stretch"></div>
               <p id="map-hint" class="map-hint">
-                Routes only · enable Street map to load online map tiles.
+                Routes only · drawn locally from your ride data.
               </p>
             </div>
             <div class="profile-column">
@@ -200,17 +280,20 @@
                   type="range"
                   min="0"
                   max="1"
-                  aria-label="Start position along reference ride"
+                  aria-label="Start position along source ride"
                 />
-                <div class="coordinate-row">
-                  <input
-                    id="start-coordinate"
-                    aria-label="Start GPS coordinates"
-                    placeholder="Latitude, longitude"
-                  /><button id="snap-start" class="text-button">
-                    Snap to ride
-                  </button>
-                </div>
+                <details class="coordinate-details">
+                  <summary>GPS coordinates</summary>
+                  <div class="coordinate-row">
+                    <input
+                      id="start-coordinate"
+                      aria-label="Start GPS coordinates"
+                      placeholder="Latitude, longitude"
+                    /><button id="snap-start" class="text-button">
+                      Snap to ride
+                    </button>
+                  </div>
+                </details>
               </div>
               <div class="endpoint end">
                 <div><strong>End</strong><span id="end-label"></span></div>
@@ -219,53 +302,53 @@
                   type="range"
                   min="1"
                   max="2"
-                  aria-label="End position along reference ride"
+                  aria-label="End position along source ride"
                 />
-                <div class="coordinate-row">
-                  <input
-                    id="end-coordinate"
-                    aria-label="End GPS coordinates"
-                    placeholder="Latitude, longitude"
-                  /><button id="snap-end" class="text-button">
-                    Snap to ride
-                  </button>
-                </div>
+                <details class="coordinate-details">
+                  <summary>GPS coordinates</summary>
+                  <div class="coordinate-row">
+                    <input
+                      id="end-coordinate"
+                      aria-label="End GPS coordinates"
+                      placeholder="Latitude, longitude"
+                    /><button id="snap-end" class="text-button">
+                      Snap to ride
+                    </button>
+                  </div>
+                </details>
               </div>
             </div>
           </div>
-          <div class="save-row">
-            <input
-              id="section-name"
-              aria-label="Section name"
-              value="Main climb"
-              maxlength="120"
-            /><button id="save-section" class="button primary">
-              + Save section</button
-            ><button id="delete-section" class="text-button danger" hidden>
-              Delete section</button
-            ><span
-              >Saved sections may overlap; they are compared
-              independently.</span
-            >
+          <div class="stretch-action-row">
+            <div>
+              <strong id="selection-summary"></strong>
+              <p id="selection-context"></p>
+            </div>
+            <div class="stretch-actions">
+              <button id="add-stretch" class="button primary">
+                Add to comparison</button
+              ><button id="cancel-stretch-edit" class="text-button" hidden>
+                Cancel edit
+              </button>
+            </div>
+            <p id="stretch-status" role="status"></p>
           </div>
         </section>
+        <div id="suggestions" class="panel"></div>
         <section class="panel">
           <div class="section-title">
             <div>
-              <div class="eyebrow">02 / COMPARE MATCHING PASSES</div>
-              <h2>What changed on this road?</h2>
-              <p>
-                Same endpoints, same direction. Each repeated lap gets its own
-                row.
-              </p>
+              <div class="eyebrow">02 / ANALYZE THIS COMPARISON</div>
+              <h2>Compare selected stretches</h2>
+              <p id="comparison-method"></p>
             </div>
             <button id="export" class="button small">↓ Export CSV</button>
           </div>
           <div class="baseline-row">
             <label
-              >Baseline pass<select
+              >Baseline stretch<select
                 id="baseline"
-                aria-label="Baseline pass"
+                aria-label="Baseline stretch"
               ></select
             ></label>
             <p>
@@ -278,7 +361,7 @@
           <div id="unmatched"></div>
           <div class="chart-heading">
             <div>
-              <h3>Same road, aligned</h3>
+              <h3>Selected stretches, aligned by progress</h3>
               <p>Hover to locate the corresponding point on the map.</p>
             </div>
             <select id="metric" aria-label="Comparison metric">
@@ -355,19 +438,21 @@
           reconstruct a route.
         </li>
         <li>
-          <strong>Include rides; choose a reference.</strong> The reference
-          defines the road, elevation and endpoints. It need not itself be
-          included.
+          <strong>Choose your comparison and source rides.</strong> Click the
+          comparison name to rename it. Include rides to browse their tabs;
+          switching tabs does not replace accepted comparison stretches.
         </li>
         <li>
-          <strong>Mark the road.</strong> Drag across the profile, move S/E
-          markers, click “Set start/end”, or enter GPS coordinates. Matching
-          follows the same direction and checks ordered route shape.
+          <strong>Mark the road.</strong> Drag across the profile, adjust the
+          sliders or enter GPS coordinates. Add your selection to the active
+          comparison, then preview and accept suggested matching stretches.
         </li>
         <li>
           <strong>Inspect each pass.</strong> Repeated laps become separate
-          rows. “Adjust” lets you select a pass manually when GPS is noisy. Save
-          a named section to retain its manual overrides.
+          entries, including several from one ride. Edit opens the same stretch
+          editor; Update stretch applies changes to that entry only. Different
+          roads can be added as manually paired efforts; these do not receive
+          same-road terrain attribution. Comparisons save locally.
         </li>
         <li>
           <strong>Explain the difference.</strong> Compare elapsed/moving time,
@@ -380,9 +465,9 @@
         changes in ride notes. These cannot be inferred reliably from GPS or HR.
       </p>
       <p>
-        Data stays in the local SQLite database. Online street tiles are
-        optional; enabling them sends map-tile requests to OpenStreetMap. Your
-        GPS tracks are included in workspace backups.
+        Data stays in the local SQLite database. Maps are drawn locally from
+        your ride data, with no online map tiles. Your GPS tracks are included
+        in workspace backups.
       </p>
       <p>See README.md and docs/ANALYSIS.md for methods and limits.</p>
     </dialog>
@@ -423,34 +508,6 @@
           ><button class="button primary" type="submit">Save notes</button>
         </div>
       </form>
-    </dialog>
-    <dialog id="manual-dialog" class="wide">
-      <div class="modal-head">
-        <h2 id="manual-title">Adjust pass</h2>
-        <button
-          class="icon-button"
-          data-close="manual-dialog"
-          aria-label="Close adjustment"
-        >
-          ×
-        </button>
-      </div>
-      <p>
-        Select the same road manually. This replaces automatic matches for this
-        ride and section until reset. Save the section to preserve it in a
-        backup.
-      </p>
-      <div id="manual-map"></div>
-      <div id="manual-profile"></div>
-      <label>Start <input id="manual-start" type="range" min="0" /></label
-      ><label>End <input id="manual-end" type="range" min="1" /></label>
-      <p id="manual-description"></p>
-      <div class="button-row">
-        <button id="reset-manual" class="button">Reset to automatic</button
-        ><button id="save-manual" class="button primary">
-          Use this manual pass
-        </button>
-      </div>
     </dialog>
   </body>
 </html>

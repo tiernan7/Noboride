@@ -6,13 +6,18 @@ import { gzipSync, gunzipSync } from "node:zlib";
 import { randomUUID } from "node:crypto";
 import { Store } from "./lib/store.mjs";
 import { databasePath } from "./lib/paths.mjs";
+import { validateComparisons } from "./lib/comparisons.mjs";
 import { parseUpload, normalizeRide } from "./lib/import.mjs";
 import { makeDemo } from "./lib/demo.mjs";
 import { DEFAULTS } from "./lib/analysis.mjs";
+import { serverHost, allowedAuthorities } from "./lib/network.mjs";
 const ROOT = fileURLToPath(new URL(".", import.meta.url)),
-  PORT = Number(process.env.PORT || 4317);
+  PORT = Number(process.env.PORT || 4317),
+  HOST = serverHost(process.argv.slice(2));
 if (!Number.isInteger(PORT) || PORT < 1024 || PORT > 65535)
   throw new Error("PORT must be 1024–65535.");
+const authorities = allowedAuthorities(HOST, PORT);
+const origins = new Set([...authorities].map((host) => `http://${host}`));
 const dbPath = databasePath(ROOT);
 const store = new Store(dbPath);
 function send(res, status, value) {
@@ -46,6 +51,7 @@ function validSettings(v) {
     ["movingThreshold", 0.1, 5],
     ["gapSeconds", 10, 300],
     ["matchRadius", 5, 100],
+    ["suggestionOverlap", 10, 100],
   ]) {
     if (v[k] !== undefined) {
       if (!Number.isFinite(v[k]) || v[k] < lo || v[k] > hi)
@@ -97,13 +103,10 @@ function validSegment(v) {
 async function api(req, res, path) {
   const method = req.method;
   if (!["GET", "HEAD"].includes(method)) {
-    if (
-      req.headers.origin &&
-      ![`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`].includes(
-        req.headers.origin,
-      )
-    )
-      return send(res, 403, { error: "Local requests only." });
+    if (req.headers.origin && !origins.has(req.headers.origin))
+      return send(res, 403, {
+        error: "Requests must use this server's origin.",
+      });
     if (
       !["/api/import", "/api/restore"].includes(path) &&
       !req.headers["content-type"]?.startsWith("application/json")
@@ -115,7 +118,17 @@ async function api(req, res, path) {
       rides: store.list(),
       segments: store.segments(),
       settings: store.settings(),
+      comparisons: store.comparisons(),
     });
+  if (method === "PUT" && path === "/api/comparisons") {
+    const value = validateComparisons(
+      JSON.parse((await readBody(req, 2 * 1024 * 1024)).toString()),
+      (id) => store.get(id),
+      validSettings,
+    );
+    store.saveComparisons(value);
+    return send(res, 200, value);
+  }
   if (method === "GET" && path.startsWith("/api/rides/")) {
     const r = store.get(path.slice(11));
     return send(res, r ? 200 : 404, r || { error: "Ride not found." });
@@ -174,16 +187,50 @@ async function api(req, res, path) {
   }
   if (method === "PATCH" && path.startsWith("/api/rides/")) {
     const v = JSON.parse((await readBody(req, 20000)).toString());
-    store.notes(path.slice(11), clean(v.name, 160), {
-      bike: clean(v.notes?.bike, 150),
-      gearing: clean(v.notes?.gearing, 250),
-      conditions: clean(v.notes?.conditions, 500),
-      notes: clean(v.notes?.notes, 6000),
-    });
+    const ride = store.get(path.slice(11));
+    if (!ride) throw new Error("Ride not found.");
+    const name =
+      v.name === undefined
+        ? ride.name
+        : typeof v.name === "string"
+          ? v.name.trim()
+          : "";
+    if (!name || name.length > 160)
+      throw new Error("Activity name must be 1–160 characters.");
+    store.notes(
+      ride.id,
+      name,
+      v.notes === undefined
+        ? ride.notes
+        : {
+            bike: clean(v.notes?.bike, 150),
+            gearing: clean(v.notes?.gearing, 250),
+            conditions: clean(v.notes?.conditions, 500),
+            notes: clean(v.notes?.notes, 6000),
+          },
+    );
     return send(res, 200, { ok: true });
   }
   if (method === "DELETE" && path.startsWith("/api/rides/")) {
-    store.remove(path.slice(11));
+    const id = path.slice(11);
+    const comparisons = store.comparisons();
+    if (
+      comparisons.items.some(
+        (c) => c.road?.rideId === id || c.entries.some((e) => e.rideId === id),
+      )
+    )
+      throw new Error(
+        "This ride is used in a comparison. Remove its comparison stretches first.",
+      );
+    for (const c of comparisons.items) {
+      c.selected = c.selected.filter((rideId) => rideId !== id);
+      c.drafts = (c.drafts || []).filter((d) => d.rideId !== id);
+      if (c.browse?.rideId === id) c.browse = null;
+    }
+    store.transaction(() => {
+      store.remove(id);
+      store.saveComparisons(comparisons);
+    });
     return send(res, 200, { ok: true });
   }
   if (method === "GET" && path === "/api/backup") {
@@ -193,6 +240,7 @@ async function api(req, res, path) {
       rides: store.list().map((r) => store.get(r.id)),
       segments: store.segments(),
       settings: store.settings(),
+      comparisons: store.comparisons(),
     };
     res.writeHead(200, {
       "Content-Type": "application/gzip",
@@ -272,6 +320,28 @@ async function api(req, res, path) {
         if (store.get(String(s.referenceId)))
           store.saveSegment(validSegment(s));
       store.saveSettings(validSettings(v.settings || {}));
+      if (v.comparisons) {
+        const incoming = validateComparisons(
+          v.comparisons,
+          (id) => store.get(id),
+          validSettings,
+        );
+        const current = store.comparisons();
+        const merged = current.items
+          .filter(
+            (c) =>
+              !incoming.items.some((x) => x.id === c.id) &&
+              !(incoming.items.length && !c.name && !c.entries.length),
+          )
+          .concat(incoming.items);
+        store.saveComparisons(
+          validateComparisons(
+            { items: merged, activeId: incoming.activeId || current.activeId },
+            (id) => store.get(id),
+            validSettings,
+          ),
+        );
+      }
     });
     return send(res, 200, { imported });
   }
@@ -280,8 +350,10 @@ async function api(req, res, path) {
 const staticFiles = {
   "/": "public/index.html",
   "/app.js": "public/app.js",
+  "/workspace.js": "public/workspace.js",
   "/styles.css": "public/styles.css",
   "/analysis.mjs": "lib/analysis.mjs",
+  "/comparisons.mjs": "lib/comparisons.mjs",
   "/leaflet.js": "node_modules/leaflet/dist/leaflet.js",
   "/leaflet.css": "node_modules/leaflet/dist/leaflet.css",
 };
@@ -297,10 +369,10 @@ const server = createServer(async (req, res) => {
   res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader(
     "Content-Security-Policy",
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://tile.openstreetmap.org; connect-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'",
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'",
   );
-  if (![`127.0.0.1:${PORT}`, `localhost:${PORT}`].includes(req.headers.host))
-    return send(res, 403, { error: "Invalid local host." });
+  if (!authorities.has(req.headers.host))
+    return send(res, 403, { error: "Invalid server host." });
   try {
     const path = new URL(req.url || "/", `http://127.0.0.1:${PORT}`).pathname;
     if (path.startsWith("/api/")) return await api(req, res, path);
@@ -323,9 +395,9 @@ const server = createServer(async (req, res) => {
   }
 });
 server.requestTimeout = 120000;
-server.listen(PORT, "127.0.0.1", () =>
+server.listen(PORT, HOST, () =>
   console.log(
-    `\nNoboride → http://127.0.0.1:${PORT}\nLocal database: ${dbPath}\nPress Ctrl+C to stop.\n`,
+    `\nNoboride → ${[...authorities].map((host) => `http://${host}`).join("\n             ")}\nListening on ${HOST}\nLocal database: ${dbPath}\nPress Ctrl+C to stop.\n`,
   ),
 );
 server.on("error", (e) => {
