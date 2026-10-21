@@ -16,7 +16,7 @@ export function createRideStory({
   let focused = "",
     rideId = "",
     context = 500,
-    full = false,
+    full = true,
     axis = "d",
     cursor = 0,
     current = null,
@@ -273,7 +273,6 @@ export function createRideStory({
     if (node) {
       focused = node.id;
       draftName = node.name;
-      full = false;
       cursor = node.start;
       onRange(node.start, node.end);
     }

@@ -49,6 +49,10 @@ test("ride story shares a recorded cursor across six lanes and preserves correct
   const hillId = await hill.getAttribute("data-climb");
   await hill.click();
   await settled(page);
+  await expect(page.locator("#story-full")).toBeChecked();
+  await expect(page.locator("#story-cursor")).toHaveAttribute("min", "0");
+  await expect(page.locator("#story-cursor")).toHaveAttribute("max", "600");
+  await page.locator("#story-full").uncheck();
   const start = Number(await page.locator("#start-range").inputValue()),
     end = Number(await page.locator("#end-range").inputValue());
   expect(
