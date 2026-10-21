@@ -13,6 +13,7 @@ import {
   deltaCurve,
 } from "/analysis.mjs";
 import { createComparisonWorkspace } from "/workspace.js";
+import { createRideStory } from "/ride-story.js";
 const $ = (id) => document.getElementById(id),
   esc = (v) =>
     String(v ?? "").replace(
@@ -47,6 +48,7 @@ const state = {
 const loaded = new Map(),
   pending = new Map();
 let comparisonWorkspace,
+  rideStory,
   rideRename = null;
 let settingsTimeout,
   hoverPoint = null,
@@ -197,12 +199,13 @@ function compute() {
       terrainBudget(m.points, state.canonical, state.settings),
     ]),
   );
-  if (!state.matches.some((m) => m.id === state.baseline))
+  const savedEntries = comparisonWorkspace.active()?.entries || [];
+  if (!savedEntries.some((entry) => entry.id === state.baseline))
     state.baseline =
       [...state.matches].sort((a, b) => a.points[0].t - b.points[0].t)[0]?.id ||
       "";
   if (
-    !state.matches.some(
+    !savedEntries.some(
       (m) => m.id === state.comparison && m.id !== state.baseline,
     )
   )
@@ -253,6 +256,7 @@ function render() {
   renderComparison();
   renderBudget();
   renderContext();
+  rideStory?.render();
 }
 function renderRides() {
   $("ride-count").textContent = state.rides.length;
@@ -310,6 +314,12 @@ function comparison() {
   return state.matches.find((m) => m.id === state.comparison);
 }
 function renderSummary() {
+  const saved = comparisonWorkspace.active()?.entries.length || 0;
+  if (saved && !state.matches.length) {
+    $("summary").innerHTML =
+      '<div class="inline-empty"><h3>No available stretches from selected rides</h3><p>Include this comparison’s missing rides or choose another comparison. Your saved stretches are unchanged.</p></div>';
+    return;
+  }
   const b = baseline(),
     c = comparison(),
     s = summarize(b?.points || state.canonical, state.settings),
@@ -324,14 +334,20 @@ function renderSummary() {
       `from ${new Set(state.matches.map((m) => m.rideId)).size} rides`,
     ],
     [
-      b ? "Baseline distance" : "Selection distance",
-      dist(s.distance),
-      b ? "Current baseline stretch" : "Source selection · add it to begin",
+      b || saved ? "Baseline distance" : "Selection distance",
+      saved && !b ? "—" : dist(s.distance),
+      b
+        ? "Current baseline stretch"
+        : saved
+          ? "Choose or include a baseline"
+          : "Source selection · add it to begin",
     ],
     [
-      b ? "Baseline grade" : "Selection grade",
-      `${num(s.grade, 1)}%`,
-      `Peak ${num(s.maxGrade, 1)}% over ${state.settings.gradeWindow} m`,
+      b || saved ? "Baseline grade" : "Selection grade",
+      saved && !b ? "—" : `${num(s.grade, 1)}%`,
+      saved && !b
+        ? "Saved baseline is unavailable"
+        : `Peak ${num(s.maxGrade, 1)}% over ${state.settings.gradeWindow} m`,
     ],
     [
       "Selected comparison",
@@ -519,6 +535,9 @@ class RouteMap {
 const mainMap = new RouteMap("map", (ll, type) => {
   if (type) selectOnMap(ll, type);
 });
+const storyMap = new RouteMap("story-map", (ll, type) => {
+  if (type) selectOnMap(ll, type);
+});
 const CH = { w: 780, h: 218, l: 48, r: 16, t: 20, b: 32 };
 function gradeColor(g) {
   return g == null
@@ -659,23 +678,44 @@ window.addEventListener("pointerup", (e) => {
 window.addEventListener("pointercancel", () => (profileDrag = null));
 function renderMatches() {
   const b = baseline();
-  $("baseline").innerHTML = state.matches
-    .map(
-      (m) =>
-        `<option value="${esc(m.id)}">${esc(rideName(m.rideId))} · pass ${m.pass}</option>`,
-    )
-    .join("");
+  const savedBaseline = comparisonWorkspace
+    .active()
+    ?.entries.find((entry) => entry.id === state.baseline);
+  const excludedBaseline =
+    savedBaseline && !state.selected.includes(savedBaseline.rideId);
+  const rejectedBaseline = savedBaseline?.review === "rejected";
+  const placeholder = !b
+    ? `<option value="${esc(state.baseline)}" disabled>${savedBaseline ? `${esc(rideName(savedBaseline.rideId))} · ${excludedBaseline ? "ride not selected" : rejectedBaseline ? "pairing rejected" : "unavailable under current matching settings"}` : "Choose a baseline stretch"}</option>`
+    : "";
+  $("baseline").innerHTML =
+    placeholder +
+    state.matches
+      .map(
+        (m) =>
+          `<option value="${esc(m.id)}">${esc(rideName(m.rideId))} · pass ${m.pass}</option>`,
+      )
+      .join("");
   $("baseline").value = state.baseline;
+  $("baseline").disabled = !state.matches.length;
+  $("baseline-notice").hidden = !savedBaseline || !!b;
+  $("baseline-notice-text").textContent =
+    savedBaseline && !b
+      ? `Saved baseline “${rideName(savedBaseline.rideId)}” is ${excludedBaseline ? "not selected" : rejectedBaseline ? "rejected during road review" : "unavailable under the current matching settings"}. ${excludedBaseline ? "Include its ride or choose another available baseline." : rejectedBaseline ? "Review its road decision or choose another available baseline." : "Review matching settings or choose another available baseline."} Time differences and overlays wait for an available baseline.`
+      : "";
+  $("include-baseline-ride").hidden = !excludedBaseline;
+  $("export").disabled = !state.matches.length;
   $("matches").innerHTML = state.matches.length
     ? `<table><thead><tr><th>Ride / pass</th><th>Elapsed</th><th>Δ baseline</th><th>Moving est.</th><th>Avg speed</th><th>Avg HR</th><th>Cadence</th><th>GPS offsets</th><th></th></tr></thead><tbody>${state.matches
         .map((m) => {
           const s = state.stats.get(m.id),
-            base = m.id === b.id,
-            delta = s.elapsed - state.stats.get(b.id).elapsed;
-          return `<tr class="${base ? "baseline" : ""}"><td><strong class="table-ride"><i style="background:${color(m.rideId)}"></i>${esc(rideName(m.rideId))}</strong><small>Pass ${m.pass} · ${dist(s.distance)}${m.manual ? " · manual" : ""}${base ? " · baseline" : ""}</small></td><td class="strong">${fmtTime(s.elapsed)}</td><td class="${delta < 0 ? "positive" : ""}">${base ? "—" : fmtTime(delta, true)}</td><td>${fmtTime(s.moving)}</td><td>${spd(s.speed)} <small>${spdUnit()}</small></td><td>${num(s.hr)} <small>bpm</small></td><td>${num(s.cadence)} <small>rpm</small></td><td title="${m.manual ? "Manual selection: automatic road checks bypassed" : `Max ordered-route offset: ${num(m.routeError, 1)}m${m.gpsBridgeSeconds ? `; GPS gap bridged for geometry checks: ${num(m.gpsBridgeSeconds)} seconds` : ""}`}">${m.manual ? "Manual" : `${Math.round(m.startMiss)} / ${Math.round(m.endMiss)} m`}${!m.manual && m.gpsBridgeSeconds ? `<small>GPS gap: ${num(m.gpsBridgeSeconds)} s</small>` : ""}</td><td><button class="text-button" data-entry-edit="${esc(m.id)}">Edit</button></td></tr>`;
+            base = m.id === b?.id,
+            delta = b ? s.elapsed - state.stats.get(b.id).elapsed : null;
+          return `<tr class="${base ? "baseline" : ""}"><td><strong class="table-ride"><i style="background:${color(m.rideId)}"></i>${esc(rideName(m.rideId))}</strong><small>Pass ${m.pass} · ${dist(s.distance)}${m.manual ? " · manual" : ""}${base ? " · baseline" : ""}</small></td><td class="strong">${fmtTime(s.elapsed)}</td><td class="${delta < 0 ? "positive" : ""}">${!b || base ? "—" : fmtTime(delta, true)}</td><td>${fmtTime(s.moving)}</td><td>${spd(s.speed)} <small>${spdUnit()}</small></td><td>${num(s.hr)} <small>bpm</small></td><td>${num(s.cadence)} <small>rpm</small></td><td title="${m.manual ? "Manual selection: automatic road checks bypassed" : `Max ordered-route offset: ${num(m.routeError, 1)}m${m.gpsBridgeSeconds ? `; GPS gap bridged for geometry checks: ${num(m.gpsBridgeSeconds)} seconds` : ""}`}">${m.manual ? "Manual" : `${Math.round(m.startMiss)} / ${Math.round(m.endMiss)} m`}${!m.manual && m.gpsBridgeSeconds ? `<small>GPS gap: ${num(m.gpsBridgeSeconds)} s</small>` : ""}</td><td><button class="text-button" data-entry-edit="${esc(m.id)}">Edit</button></td></tr>`;
         })
         .join("")}</tbody></table>`
-    : '<div class="inline-empty"><h3>No stretches in this comparison yet</h3><p>Choose a source ride tab, select at least 20 meters, then add the stretch to this comparison.</p></div>';
+    : comparisonWorkspace.active()?.entries.length
+      ? '<div class="inline-empty"><h3>No available stretches from selected rides</h3><p>Include missing rides or review the matching settings. Saved stretches have not been removed.</p></div>'
+      : '<div class="inline-empty"><h3>No stretches in this comparison yet</h3><p>Choose a source ride tab, select at least 20 meters, then add the stretch to this comparison.</p></div>';
   $("timing-note").textContent =
     `Moving time is estimated above ${spd(state.settings.movingThreshold)} ${spdUnit()}, excluding known pauses and recording gaps. It may differ from Garmin. HR/cadence/power averages are time-weighted; absent sensors stay blank.`;
   $("unmatched").innerHTML = "";
@@ -684,9 +724,12 @@ function renderComparison() {
   const metric = state.metric,
     b = baseline();
   $("metric").value = metric;
+  $("metric").disabled = !b;
   state.chartData = [];
   if (!b) {
-    $("comparison-chart").innerHTML = "";
+    $("comparison-chart").textContent = state.matches.length
+      ? "Choose an available baseline to show aligned overlays."
+      : "";
     $("legend").innerHTML = "";
     return;
   }
@@ -847,6 +890,7 @@ function renderContext() {
       comparisonWorkspace.active()?.entries.map((e) => e.rideId) || [],
     ),
   ]
+    .filter((id) => state.selected.includes(id))
     .map((id) => loaded.get(id))
     .filter(Boolean);
   $("context").innerHTML = contextRides
@@ -940,6 +984,8 @@ function exportCSV() {
     "baseline_entry_id",
     "source_start_index",
     "source_end_index",
+    "road_relationship",
+    "road_review",
   ];
   const rows = state.matches.map((m) => {
     const r = loaded.get(m.rideId),
@@ -979,6 +1025,8 @@ function exportCSV() {
       state.baseline,
       m.startIndex,
       m.endIndex,
+      m.relation,
+      m.review,
     ]
       .map(csv)
       .join(",");
@@ -1272,5 +1320,33 @@ comparisonWorkspace = createComparisonWorkspace({
   esc,
   rideName,
   persistSelection,
+});
+rideStory = createRideStory({
+  state,
+  loaded,
+  api,
+  json,
+  task,
+  esc,
+  onRange: changeRange,
+  highlight: (point) => {
+    mainMap.highlight(point);
+    storyMap.highlight(point);
+  },
+  updateMap: (ride, window, start, end) => {
+    storyMap.key = "";
+    storyMap.update(
+      [
+        {
+          id: ride.id,
+          points: ride.points.slice(window.start, window.end + 1),
+        },
+      ],
+      [],
+      ride,
+      start,
+      end,
+    );
+  },
 });
 task("Loading your local workspace…", () => refresh(true));

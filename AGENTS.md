@@ -77,6 +77,14 @@ Activity names in the ride library support inline renaming. The display `name` i
 
 The Settings button opens a native modal dialog. Suggestion de-duplication uses source-distance intersection over union with a validated per-comparison `suggestionOverlap` percentage (10–100, default 60). This replaces fixed endpoint guards; it never merges separate recording passes or verifies manual edits. Keep this control distinct from GPS gate radius, which changes automatic matching. Existing contexts/backups without this optional setting receive the default.
 
+Checked rides control analysis rows, charts, context and CSV as well as source tabs. Excluded entries remain stored and appear in a collapsed list with explicit inclusion actions. Comparison switching preserves the current checked set; initial activation/reload restores the saved active snapshot. Do not silently replace an existing baseline when its ride is unchecked or its match fails verification: preserve its ID, show a notice, suppress baseline-dependent results, and let the user include the ride or choose another available baseline. The road-reference track may still be fetched internally for verification/common terrain even when its analysis row is excluded. Keep repeated passes and backup entries unchanged when filtering. Match availability is distinct from ride inclusion; the active switcher can show Review matches.
+
+## Ride-story foundations (dev)
+
+`lib/ride-story.mjs` contains terrain-only detection, contextual range windows, raw-coordinate route diagnostics and climb-correction validation. `public/ride-story.js` renders responsive linked source traces and a shared map cursor; `public/match-review.js` handles original-coordinate inspection. See `docs/RIDE-STORY.md` for explicit thresholds, limitations and the remaining seven requested features. Do not infer riding intention from speed/HR or claim a global road identity from proximity.
+
+Climb corrections belong to activity metadata as optional `climbEdits`; preserve original compressed points, source filenames, notes and IDs. Same-road/terrain distinctions and human review status/reasons are optional comparison-entry fields; rejected ranges/reasons use `matchDecisions`. Rejecting an entry preserves it and any selected baseline ID while excluding it from analysis. Manual same-road corrections remain manual and do not enable geographic terrain attribution. Remembered decisions are per road/comparison and are cleared when that road is removed. Keep old backups compatible and test metadata/decision restoration transactionally. These optional JSON fields need no SQL migration.
+
 ## Import robustness
 
 - GPX/TCX exports can contain empty or untimed sibling tracks/activities. Skip unusable siblings without discarding valid timed tracks later in the file. This was exposed by the public GPX fixture and has a regression test.

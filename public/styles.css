@@ -1491,3 +1491,204 @@ dialog > p {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+.comparison-availability {
+  padding: 12px;
+  border: 1px solid #dce8f5;
+  border-radius: 8px;
+  background: #f6f9fd;
+  margin: 12px 0;
+  overflow-wrap: anywhere;
+}
+.comparison-availability p {
+  margin: 0 0 8px;
+}
+#excluded-stretches {
+  margin-top: 12px;
+}
+#excluded-stretches summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+#excluded-entries {
+  list-style: none;
+  padding: 0;
+}
+#excluded-entries li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 0;
+}
+#excluded-entries li > div {
+  flex: 1;
+  min-width: 160px;
+  overflow-wrap: anywhere;
+}
+#excluded-entries small {
+  display: block;
+  color: var(--muted);
+}
+#summary > .inline-empty {
+  grid-column: 1 / -1;
+}
+.story-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 18px;
+  align-items: end;
+}
+.story-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.story-controls .check-label {
+  flex-direction: row;
+  align-items: center;
+  padding: 8px 0;
+}
+.story-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(240px, 1fr);
+  gap: 24px;
+}
+.story-grid > div {
+  min-width: 0;
+}
+#story-charts svg {
+  display: block;
+  width: 100%;
+  touch-action: pan-y;
+}
+#story-charts svg text {
+  font-size: 11px;
+}
+#story-cursor,
+#climb-start,
+#climb-end {
+  width: 100%;
+}
+#story-position {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+#story-map {
+  height: 380px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #edf2f6;
+}
+.terrain-settings {
+  margin: 18px 0;
+  color: var(--muted);
+}
+#climb-tree {
+  max-height: 450px;
+  overflow-y: auto;
+}
+#climb-tree ul {
+  list-style: none;
+  padding-left: 20px;
+  border-left: 1px solid var(--border);
+}
+#climb-tree > ul {
+  padding-left: 0;
+  border: 0;
+}
+.climb-node {
+  overflow-wrap: anywhere;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  background: #fff;
+  margin: 4px 0;
+}
+.climb-node[aria-pressed="true"] {
+  background: #edf5ff;
+  border-color: var(--blue);
+}
+.climb-node small {
+  display: block;
+  color: var(--muted);
+}
+#climb-editor {
+  margin-top: 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+}
+#climb-editor label {
+  display: block;
+  margin: 12px 0;
+}
+#climb-editor input {
+  max-width: 100%;
+}
+@media (max-width: 800px) {
+  .story-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  #story-map {
+    height: 280px;
+  }
+  .story-controls label {
+    max-width: 100%;
+  }
+}
+#match-review {
+  width: min(920px, calc(100vw - 30px));
+  max-width: 920px;
+}
+#match-review-map {
+  height: 360px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #edf2f6;
+}
+#match-review-metrics dl {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+#match-review-metrics dd {
+  margin: 0;
+}
+#match-review-divergence,
+.match-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0;
+}
+#match-review-reason {
+  display: block;
+  width: 100%;
+}
+.reference-key {
+  color: #287bd5;
+}
+#story-ride-name,
+#match-review-title {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.candidate-key {
+  color: #c35e28;
+}
+.route-direction span {
+  display: inline-block;
+  font-size: 25px;
+  line-height: 28px;
+  text-shadow: 0 0 3px white;
+}
+#rejected-matches {
+  margin-top: 16px;
+  color: var(--muted);
+}

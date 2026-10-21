@@ -11,7 +11,7 @@
     "start": "node server.mjs",
     "dev": "node --watch server.mjs",
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check server.mjs && node --check public/app.js && node --check public/workspace.js && node --check lib/analysis.mjs && node --check lib/import.mjs && node --check lib/comparisons.mjs && node --check lib/store.mjs",
+    "check": "node --check server.mjs && node --check public/app.js && node --check public/workspace.js && node --check public/ride-story.js && node --check public/match-review.js && node --check lib/ride-story.mjs && node --check lib/analysis.mjs && node --check lib/import.mjs && node --check lib/comparisons.mjs && node --check lib/store.mjs",
     "test:ui": "playwright test",
     "format": "prettier --write server.mjs lib public scripts tests playwright.config.mjs",
     "format:check": "prettier --check server.mjs lib public scripts tests playwright.config.mjs"

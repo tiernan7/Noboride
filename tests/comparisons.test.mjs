@@ -131,6 +131,49 @@ test("comparisons retain multiple entries from one ride and an independent basel
   assert.equal(result.items[0].entries.length, 2);
   assert.equal(result.items[0].baseline, "one-second");
   assert.equal(result.items[0].entries[1].kind, "effort");
+  assert.deepEqual(result.items[0].matchDecisions, []);
+});
+test("review decisions preserve manual same-road provenance and reject inconsistent automatic terrain labels", () => {
+  const c = context("review", "Road review");
+  Object.assign(c.entries[1], {
+    relation: "same-road",
+    review: "confirmed",
+    reviewReason: "Corrected endpoint by inspection",
+  });
+  c.matchDecisions = [
+    {
+      rideId: "ride",
+      start: 0,
+      end: 2,
+      decision: "rejected",
+      reason: "Parallel road",
+    },
+  ];
+  const result = validate({ activeId: c.id, items: [c] }).items[0];
+  assert.equal(result.entries[1].kind, "effort");
+  assert.equal(
+    result.entries[1].reviewReason,
+    "Corrected endpoint by inspection",
+  );
+  assert.deepEqual(result.matchDecisions, c.matchDecisions);
+  for (const fields of [
+    { kind: "matched", relation: "similar-terrain" },
+    { review: "inferred" },
+    { reviewReason: "x".repeat(501) },
+  ]) {
+    const invalid = structuredClone(c);
+    Object.assign(invalid.entries[1], fields);
+    assert.throws(
+      () => validate({ activeId: invalid.id, items: [invalid] }),
+      /review|terrain/,
+    );
+  }
+  const invalid = structuredClone(c);
+  invalid.matchDecisions[0].start = -1;
+  assert.throws(
+    () => validate({ activeId: invalid.id, items: [invalid] }),
+    /endpoints/,
+  );
 });
 test("comparison names cannot collide after whitespace, case and Unicode normalization", () => {
   assert.throws(

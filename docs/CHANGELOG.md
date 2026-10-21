@@ -2,6 +2,11 @@
 
 ## Unreleased — dev
 
+- Added a responsive linked ride story with elevation, gradient, speed, HR and available cadence/power, distance/time axes, shared cursor/local map, approach/aftermath context and explicit gaps.
+- Added terrain-only hill/ramp detection and longer ascending passages across bounded dips. Activity-level name/boundary corrections are reversible, validated and included in backups without changing source tracks or comparison entries.
+- Added original-coordinate road inspection, direction/endpoint/progress-offset diagnostics, remembered confirm/reject decisions and explicit same-road versus similar-terrain/manual provenance. Rejected entries are excluded without deleting them; failed review saves roll back. CSV carries road relationship and review status.
+- Scoped analysis, charts, context and CSV to checked rides while retaining excluded saved stretches. Added comparison availability labels/counts, a collapsed excluded list and explicit Include ride / Include missing rides actions. Switching comparisons keeps the checked ride set; reload restores the active snapshot.
+- Preserved unavailable baseline choices instead of silently substituting another stretch. Raw selected-stretch statistics remain available; baseline-relative results wait for an included verified baseline or an explicit new choice.
 - Replaced the inline analysis-settings panel with a modal Settings dialog. Added an adjustable suggestion overlap percentage (10–100%, default 60%), persisted per comparison and in backups. De-duplication now uses shared/combined source distance instead of fixed endpoint tolerances, so substantially overlapping edited ranges can hide redundant suggestions without merging separate laps.
 - Added inline activity renaming by clicking names in the ride library, with Save/Enter and Cancel/Escape. Names update across tabs, comparisons and exports; original filenames, stable IDs, notes and duplicate detection remain intact. Name-only metadata updates preserve existing notes and reject blank or overlong names.
 - Suppressed redundant GPS suggestions after accepting a lightly trimmed preview or editing an existing stretch's boundaries. Larger changes and separate recording passes remain eligible suggestions; saved endpoints and match-verification rules are unchanged.

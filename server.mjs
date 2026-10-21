@@ -10,6 +10,7 @@ import { validateComparisons } from "./lib/comparisons.mjs";
 import { parseUpload, normalizeRide } from "./lib/import.mjs";
 import { makeDemo } from "./lib/demo.mjs";
 import { DEFAULTS } from "./lib/analysis.mjs";
+import { validateClimbEdits } from "./lib/ride-story.mjs";
 import { serverHost, allowedAuthorities } from "./lib/network.mjs";
 const ROOT = fileURLToPath(new URL(".", import.meta.url)),
   PORT = Number(process.env.PORT || 4317),
@@ -186,7 +187,7 @@ async function api(req, res, path) {
     return send(res, 200, { ok: true });
   }
   if (method === "PATCH" && path.startsWith("/api/rides/")) {
-    const v = JSON.parse((await readBody(req, 20000)).toString());
+    const v = JSON.parse((await readBody(req, 100000)).toString());
     const ride = store.get(path.slice(11));
     if (!ride) throw new Error("Ride not found.");
     const name =
@@ -197,18 +198,25 @@ async function api(req, res, path) {
           : "";
     if (!name || name.length > 160)
       throw new Error("Activity name must be 1–160 characters.");
-    store.notes(
-      ride.id,
-      name,
-      v.notes === undefined
-        ? ride.notes
-        : {
-            bike: clean(v.notes?.bike, 150),
-            gearing: clean(v.notes?.gearing, 250),
-            conditions: clean(v.notes?.conditions, 500),
-            notes: clean(v.notes?.notes, 6000),
-          },
-    );
+    const climbEdits =
+      v.climbEdits === undefined
+        ? undefined
+        : validateClimbEdits(v.climbEdits, ride.points);
+    store.transaction(() => {
+      store.notes(
+        ride.id,
+        name,
+        v.notes === undefined
+          ? ride.notes
+          : {
+              bike: clean(v.notes?.bike, 150),
+              gearing: clean(v.notes?.gearing, 250),
+              conditions: clean(v.notes?.conditions, 500),
+              notes: clean(v.notes?.notes, 6000),
+            },
+      );
+      if (climbEdits) store.climbEdits(ride.id, climbEdits);
+    });
     return send(res, 200, { ok: true });
   }
   if (method === "DELETE" && path.startsWith("/api/rides/")) {
@@ -225,6 +233,9 @@ async function api(req, res, path) {
     for (const c of comparisons.items) {
       c.selected = c.selected.filter((rideId) => rideId !== id);
       c.drafts = (c.drafts || []).filter((d) => d.rideId !== id);
+      c.matchDecisions = (c.matchDecisions || []).filter(
+        (decision) => decision.rideId !== id,
+      );
       if (c.browse?.rideId === id) c.browse = null;
     }
     store.transaction(() => {
@@ -305,6 +316,9 @@ async function api(req, res, path) {
         }
         const ride = {
           ...normalizeRide(r, clean(r.id, 150)),
+          ...(r.climbEdits === undefined
+            ? {}
+            : { climbEdits: validateClimbEdits(r.climbEdits, r.points) }),
           name: clean(r.name, 160),
           demo: !!r.demo,
           notes: {
@@ -354,6 +368,9 @@ const staticFiles = {
   "/styles.css": "public/styles.css",
   "/analysis.mjs": "lib/analysis.mjs",
   "/comparisons.mjs": "lib/comparisons.mjs",
+  "/ride-story.mjs": "lib/ride-story.mjs",
+  "/ride-story.js": "public/ride-story.js",
+  "/match-review.js": "public/match-review.js",
   "/leaflet.js": "node_modules/leaflet/dist/leaflet.js",
   "/leaflet.css": "node_modules/leaflet/dist/leaflet.css",
 };

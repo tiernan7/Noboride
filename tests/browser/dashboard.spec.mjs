@@ -359,6 +359,234 @@ test("source tabs follow included rides and preserve an empty browsing selection
   await expect(tabs).toHaveCount(1);
 });
 
+test("selected rides scope saved analysis, preserve missing baselines and reveal partial comparisons", async ({
+  page,
+  request,
+}) => {
+  await seedDemo(request);
+  const entries = [0, 1, 2].map((i) => ({
+    id: `scope-${i}`,
+    rideId: `demo-${i}`,
+    start: 414,
+    end: 550,
+    kind: i ? "effort" : "source",
+  }));
+  const first = {
+    id: "scope-hill",
+    name: "Saved hill",
+    entries,
+    road: { rideId: "demo-0", start: 414, end: 550 },
+    selected: ["demo-0", "demo-1", "demo-2"],
+    browse: { rideId: "demo-0", start: 414, end: 550 },
+    baseline: "scope-1",
+    comparison: "scope-2",
+    metric: "delta",
+    settings: {},
+  };
+  const other = {
+    ...first,
+    id: "scope-other",
+    name: "Other hill",
+    entries: [{ ...entries[1], id: "other-entry" }],
+    road: { rideId: "demo-1", start: 414, end: 550 },
+    selected: ["demo-1"],
+    browse: { rideId: "demo-1", start: 414, end: 550 },
+    baseline: "other-entry",
+    comparison: "",
+  };
+  expect(
+    (
+      await request.put("/api/comparisons", {
+        data: { activeId: first.id, items: [first, other] },
+      })
+    ).ok(),
+  ).toBeTruthy();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/");
+  await settled(page);
+  await expect(page.locator("#matches tbody tr")).toHaveCount(3);
+  await expect(page.locator("#comparison-availability-text")).toContainText(
+    "Ready",
+  );
+  await page.locator('input[data-include="demo-1"]').uncheck();
+  await settled(page);
+  await expect(page.locator("#matches tbody tr")).toHaveCount(2);
+  await expect(page.locator("#context .context-card")).toHaveCount(2);
+  await expect(page.locator("#comparison-entries li")).toHaveCount(2);
+  await expect(page.locator("#excluded-entries li")).toHaveCount(1);
+  await expect(page.locator("#comparison-availability-text")).toContainText(
+    "2 of 3",
+  );
+  await expect(
+    page.locator(`#comparison-switch option[value="${first.id}"]`),
+  ).toContainText("Partial (2/3)");
+  await expect(
+    page.locator(`#comparison-switch option[value="${other.id}"]`),
+  ).toContainText("No selected rides");
+  await expect(page.locator("#baseline")).toHaveValue("scope-1");
+  await expect(page.locator("#baseline-notice")).toContainText("not selected");
+  await expect(page.locator("#comparison-chart svg")).toHaveCount(0);
+  await expect(page.locator("#budget-panel")).toBeHidden();
+  for (const cell of await page
+    .locator("#matches tbody tr td:nth-child(3)")
+    .all())
+    await expect(cell).toHaveText("—");
+  const csvDownload = page.waitForEvent("download");
+  await page.locator("#export").click();
+  const csvFile = await csvDownload;
+  expect(
+    readFileSync(await csvFile.path(), "utf8")
+      .trim()
+      .split(/\r?\n/),
+  ).toHaveLength(3);
+  let workspace = await (await request.get("/api/workspace")).json();
+  expect(workspace.comparisons.items[0].entries).toEqual(entries);
+  expect(workspace.comparisons.items[0].baseline).toBe("scope-1");
+  const fetched = [];
+  page.on("request", (req) => {
+    if (new URL(req.url()).pathname.startsWith("/api/rides/"))
+      fetched.push(new URL(req.url()).pathname);
+  });
+  await page.reload();
+  await settled(page);
+  expect(fetched).not.toContain("/api/rides/demo-1");
+  await expect(page.locator("#matches tbody tr")).toHaveCount(2);
+  await expect(page.locator("#baseline")).toHaveValue("scope-1");
+  await page.locator("#include-baseline-ride").click();
+  await settled(page);
+  await expect(page.locator("#matches tbody tr")).toHaveCount(3);
+  await expect(page.locator("#baseline-notice")).toBeHidden();
+  await expect(page.locator("#comparison-chart svg")).toHaveCount(1);
+  await page.locator('input[data-include="demo-1"]').uncheck();
+  await settled(page);
+  await page.locator("#baseline").selectOption("scope-0");
+  await expect(page.locator("#baseline-notice")).toBeHidden();
+  await expect(page.locator("#comparison-chart svg")).toHaveCount(1);
+  await page.locator("#excluded-stretches-summary").click();
+  await page.locator('[data-include-saved-ride="demo-1"]').click();
+  await settled(page);
+  await expect(page.locator("#baseline")).toHaveValue("scope-0");
+  await page.locator("#clear-rides").click();
+  await settled(page);
+  await expect(page.locator("#matches tbody tr")).toHaveCount(0);
+  await expect(page.locator("#context .context-card")).toHaveCount(0);
+  await expect(page.locator("#summary")).toContainText(
+    "No available stretches",
+  );
+  await expect(page.locator("#export")).toBeDisabled();
+  await expect(page.locator("#comparison-chart svg")).toHaveCount(0);
+  await expect(page.locator("#baseline")).toHaveValue("scope-0");
+  await page.reload();
+  await settled(page);
+  await expect(page.getByRole("tab")).toHaveCount(0);
+  await expect(page.locator("#matches tbody tr")).toHaveCount(0);
+  // Switching contexts must not secretly replace the checked ride set.
+  await page.locator("#comparison-switch").selectOption(other.id);
+  await settled(page);
+  await expect(page.getByRole("tab")).toHaveCount(0);
+  await expect(page.locator("#matches tbody tr")).toHaveCount(0);
+  await page.locator("#include-missing-rides").click();
+  await settled(page);
+  await expect(page.getByRole("tab")).toHaveCount(1);
+  await expect(page.locator("#matches tbody tr")).toHaveCount(1);
+  await expect(page.locator("#baseline")).toHaveValue("other-entry");
+  await page.locator("#comparison-switch").selectOption(first.id);
+  await settled(page);
+  await expect(page.getByRole("tab")).toHaveCount(1);
+  await expect(page.locator("#matches tbody tr")).toHaveCount(1);
+  await expect(page.locator("#baseline")).toHaveValue("scope-0");
+  await expect(page.locator("#baseline-notice")).toContainText("not selected");
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth),
+  ).toBeLessThanOrEqual(391);
+  await page
+    .locator(".comparison-workspace")
+    .screenshot({ path: "artifacts/partial-comparison-mobile.png" });
+  await page.locator("#include-missing-rides").click();
+  await settled(page);
+  await expect(page.getByRole("tab")).toHaveCount(3);
+  await expect(page.locator("#matches tbody tr")).toHaveCount(3);
+  await expect(page.locator("#baseline")).toHaveValue("scope-0");
+  workspace = await (await request.get("/api/workspace")).json();
+  expect(workspace.comparisons.items[0].entries).toEqual(entries);
+  expect(workspace.comparisons.items[1].entries).toEqual(other.entries);
+  const backup = JSON.parse(
+    gunzipSync(await (await request.get("/api/backup")).body()),
+  );
+  expect(backup.comparisons.items[0].entries).toEqual(entries);
+  expect(errors).toEqual([]);
+});
+
+test("an unverified saved baseline is distinguished from an unselected ride without substitution", async ({
+  page,
+  request,
+}) => {
+  await seedDemo(request);
+  const road = { rideId: "demo-0", start: 414, end: 550 };
+  const entries = [
+    { id: "verified-source", ...road, kind: "source" },
+    {
+      id: "stale-match",
+      rideId: "demo-1",
+      start: 20,
+      end: 100,
+      kind: "matched",
+    },
+  ];
+  const context = {
+    id: "unverified",
+    name: "Review old match",
+    entries,
+    road,
+    selected: ["demo-0", "demo-1"],
+    browse: road,
+    baseline: "stale-match",
+    comparison: "verified-source",
+    metric: "delta",
+    settings: {},
+  };
+  expect(
+    (
+      await request.put("/api/comparisons", {
+        data: { activeId: context.id, items: [context] },
+      })
+    ).ok(),
+  ).toBeTruthy();
+  await page.goto("/");
+  await settled(page);
+  await expect(page.locator("#matches tbody tr")).toHaveCount(1);
+  await expect(page.locator("#comparison-entries li")).toHaveCount(2);
+  await expect(page.locator("#comparison-availability-text")).toContainText(
+    "could not be verified",
+  );
+  await expect(page.locator("#comparison-switch option:checked")).toContainText(
+    "Review matches (1/2)",
+  );
+  await expect(page.locator("#baseline")).toHaveValue("stale-match");
+  await expect(page.locator("#baseline-notice")).toContainText(
+    "matching settings",
+  );
+  await expect(page.locator("#include-baseline-ride")).toBeHidden();
+  await expect(page.locator("#comparison-chart svg")).toHaveCount(0);
+  await expect(page.locator("#matches tbody td:nth-child(3)")).toHaveText("—");
+  await page.locator("#baseline").selectOption("verified-source");
+  await expect(page.locator("#baseline-notice")).toBeHidden();
+  await expect(page.locator("#comparison-chart svg")).toHaveCount(1);
+  await page.locator('input[data-include="demo-0"]').uncheck();
+  await settled(page);
+  await expect(page.locator("#matches tbody tr")).toHaveCount(0);
+  await expect(page.locator("#baseline-notice")).toContainText("not selected");
+  await page.locator("#include-missing-rides").click();
+  await settled(page);
+  await expect(page.locator("#matches tbody tr")).toHaveCount(1);
+  expect(
+    (await (await request.get("/api/workspace")).json()).comparisons.items[0]
+      .entries,
+  ).toEqual(entries);
+});
+
 test("legacy included rides carry over and Noboride selections take precedence", async ({
   page,
   request,
@@ -582,6 +810,13 @@ test("a second lap of the same recording is suggested as a separate comparison e
   expect(entries[0].id).not.toBe(entries[1].id);
   expect(entries[1].kind).toBe("matched");
   expect(entries[1].start).toBeGreaterThan(600);
+  await page.locator(`input[data-include="${entries[0].rideId}"]`).uncheck();
+  await settled(page);
+  await expect(page.locator("#matches tbody tr")).toHaveCount(0);
+  await expect(page.locator("#excluded-entries li")).toHaveCount(2);
+  await page.locator("#include-missing-rides").click();
+  await settled(page);
+  await expect(page.locator("#matches tbody tr")).toHaveCount(2);
   await expect(
     page.locator("#source-stretches [data-source-entry]"),
   ).toHaveCount(2);

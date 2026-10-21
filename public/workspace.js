@@ -4,6 +4,7 @@ import {
   coversSuggestedPass,
 } from "/comparisons.mjs";
 import { findMatches } from "/analysis.mjs";
+import { createMatchReview } from "/match-review.js";
 
 // HTTP over the local network lacks randomUUID on some mobile browsers.
 const newId = () =>
@@ -43,6 +44,7 @@ export function createComparisonWorkspace({
     selected: [...state.selected],
     browse: null,
     drafts: [],
+    matchDecisions: [],
     baseline: "",
     comparison: "",
     metric: "ele",
@@ -110,7 +112,7 @@ export function createComparisonWorkspace({
       250,
     );
   }
-  async function activate(id) {
+  async function activate(id, { restoreSelection = false } = {}) {
     deletionTarget = null;
     pendingAction = null;
     $("comparison-delete-confirm").hidden = true;
@@ -119,16 +121,13 @@ export function createComparisonWorkspace({
     entryFeedback = "";
     collection.activeId = id;
     const c = active();
+    c.matchDecisions ||= [];
     const available = new Set(state.rides.map((r) => r.id));
-    state.selected = c.selected.filter((id) => available.has(id));
+    state.selected = (restoreSelection ? c.selected : state.selected).filter(
+      (id) => available.has(id),
+    );
     await Promise.all(
-      [
-        ...new Set([
-          ...state.selected,
-          ...c.entries.map((e) => e.rideId),
-          ...(c.road ? [c.road.rideId] : []),
-        ]),
-      ]
+      [...new Set([...state.selected, ...(c.road ? [c.road.rideId] : [])])]
         .filter((id) => available.has(id))
         .map(getRide),
     );
@@ -151,7 +150,7 @@ export function createComparisonWorkspace({
         collection.items.push(c);
         collection.activeId = c.id;
       }
-      await activate(collection.activeId);
+      await activate(collection.activeId, { restoreSelection: true });
     }
   }
   function roadPoints() {
@@ -169,6 +168,8 @@ export function createComparisonWorkspace({
       if (!ride) return [];
       const pass = (counts.get(entry.rideId) || 0) + 1;
       counts.set(entry.rideId, pass);
+      if (!state.selected.includes(entry.rideId)) return [];
+      if (entry.review === "rejected") return [];
       let match;
       if (entry.kind === "matched") {
         match =
@@ -196,6 +197,10 @@ export function createComparisonWorkspace({
           pass: match.pass || pass,
           manual: entry.kind === "effort",
           kind: entry.kind,
+          relation:
+            entry.relation ||
+            (entry.kind === "effort" ? "similar-terrain" : "same-road"),
+          review: entry.review || "",
         },
       ];
     });
@@ -209,6 +214,11 @@ export function createComparisonWorkspace({
       return ride
         ? findMatches(ride, points, state.settings.matchRadius).filter(
             (m) =>
+              !(c.matchDecisions || []).some(
+                (decision) =>
+                  decision.rideId === id &&
+                  coversSuggestedPass(decision, m, ride.points, 95),
+              ) &&
               !c.entries.some(
                 (e) =>
                   e.rideId === id &&
@@ -256,7 +266,7 @@ export function createComparisonWorkspace({
     $("comparison-switch").innerHTML = collection.items
       .map(
         (x) =>
-          `<option value="${esc(x.id)}">${esc(x.name || "Untitled comparison")}</option>`,
+          `<option value="${esc(x.id)}">${esc(x.name || "Untitled comparison")} · ${availability(x).label}</option>`,
       )
       .join("");
     $("comparison-switch").value = c.id;
@@ -264,7 +274,20 @@ export function createComparisonWorkspace({
     $("delete-comparison").disabled =
       collection.items.length === 1 && !c.entries.length && !c.name;
     $("comparison-count").textContent =
-      `${c.entries.length} stretch${c.entries.length === 1 ? "" : "es"} · ${new Set(c.entries.map((e) => e.rideId)).size} rides`;
+      `${state.matches.length} of ${c.entries.length} stretches available · ${new Set(state.matches.map((e) => e.rideId)).size} selected ride${new Set(state.matches.map((e) => e.rideId)).size === 1 ? "" : "s"}`;
+    const coverage = availability(c);
+    $("comparison-availability").hidden = !c.entries.length;
+    $("comparison-availability-text").textContent = !coverage.selected.length
+      ? "No selected rides supply stretches for this comparison. Include its rides or switch to another comparison. Saved stretches are kept."
+      : coverage.missing.length
+        ? `Partial comparison: ${state.matches.length} of ${c.entries.length} stretches available. ${coverage.missing.length} saved stretches belong to unselected rides.`
+        : state.matches.length < c.entries.length
+          ? `${state.matches.length} of ${c.entries.length} stretches available. Some pairings are rejected or could not be verified under the current settings.`
+          : `Ready: all ${c.entries.length} saved stretches are available from selected rides.`;
+    $("include-missing-rides").hidden = !coverage.missing.length;
+    $("excluded-stretches").hidden = !coverage.missing.length;
+    $("excluded-stretches-summary").textContent =
+      `${coverage.missing.length} saved stretches from unselected rides`;
     if (
       editing &&
       state.referenceId !== c.entries.find((e) => e.id === editing.id)?.rideId
@@ -292,6 +315,15 @@ export function createComparisonWorkspace({
     $("cancel-stretch-edit").hidden = !editing;
     $("cancel-stretch-edit").textContent = dirty ? "Cancel changes" : "Done";
     $("reset-selection").disabled = !state.referenceId;
+    const currentSource = c.entries.find(
+      (entry) =>
+        entry.kind === "source" &&
+        entry.rideId === state.referenceId &&
+        entry.start === state.start &&
+        entry.end === state.end,
+    );
+    $("inspect-pairing").hidden =
+      !c.road || !state.referenceId || !!currentSource;
     $("selection-summary").textContent = state.referenceId
       ? rangeLabel({
           rideId: state.referenceId,
@@ -304,26 +336,71 @@ export function createComparisonWorkspace({
       : duplicate
         ? `Already saved in “${c.name || "Untitled comparison"}”. Use Edit in the stretch list to change it.`
         : `Preview only. Add this stretch to “${c.name || "Untitled comparison"}” to include it.`;
+    const renderEntries = (entries, excluded = false) =>
+      entries
+        .map(
+          (e) =>
+            `<li class="${editing?.id === e.id ? "editing-stretch" : ""}"><div><strong>${c.entries.findIndex((x) => x.id === e.id) + 1}. ${esc(rideName(e.rideId))}</strong><small>${excluded ? "Ride not selected" : esc(rangeLabel(e))} · ${e.kind === "matched" ? "GPS matched" : e.kind === "source" ? "Selected road" : e.relation === "same-road" ? "Manually confirmed same road" : "Similar terrain · manually paired effort"}${e.review === "rejected" ? " · rejected: not analysed" : e.review === "confirmed" ? " · confirmed" : ""}${excluded || e.review === "rejected" || state.matches.some((m) => m.id === e.id) ? "" : " · unavailable under current matching settings"}</small></div>${excluded ? `<button class="text-button" data-include-saved-ride="${esc(e.rideId)}">Include ride</button>` : `<button class="text-button" data-entry-edit="${esc(e.id)}">Edit</button>${e.kind !== "source" ? `<button class="text-button" data-entry-review="${esc(e.id)}">Review road</button>` : ""}`}<button class="text-button danger" data-entry-remove="${esc(e.id)}">Remove</button></li>`,
+        )
+        .join("");
     $("comparison-entries").innerHTML = c.entries.length
-      ? c.entries
-          .map(
-            (e, index) =>
-              `<li class="${editing?.id === e.id ? "editing-stretch" : ""}"><div><strong>${index + 1}. ${esc(rideName(e.rideId))}</strong><small>${esc(rangeLabel(e))} · ${e.kind === "matched" ? "GPS matched" : e.kind === "source" ? "Selected road" : "Manually paired effort"}${state.matches.some((m) => m.id === e.id) ? "" : " · unavailable under current matching settings"}</small></div><button class="text-button" data-entry-edit="${esc(e.id)}">Edit</button><button class="text-button danger" data-entry-remove="${esc(e.id)}">Remove</button></li>`,
-          )
-          .join("")
+      ? renderEntries(coverage.selected)
       : '<li class="comparison-empty">Choose a ride tab, select a stretch, then add it here. Suggestions appear after the first stretch.</li>';
+    $("excluded-entries").innerHTML = renderEntries(coverage.missing, true);
     const suggested = suggestions();
     $("suggestions").innerHTML = suggested.length
-      ? `<h3>Suggested matching stretches</h3><p>Review the endpoints before adding. Suggestions are not part of the comparison yet.</p>${suggested.map((m, i) => `<div class="suggestion"><span>${esc(rideName(m.rideId))} · pass ${m.pass}<small>GPS offsets ${m.startMiss.toFixed(0)} / ${m.endMiss.toFixed(0)} m · route offset ${m.routeError.toFixed(0)} m${m.gpsBridgeSeconds ? ` · GPS bridge ${m.gpsBridgeSeconds}s` : ""}</small></span><button class="text-button" data-suggestion-view="${i}">Preview</button><button class="button small" data-suggestion-add="${i}">Add match</button></div>`).join("")}`
+      ? `<h3>Suggested matching stretches</h3><p>GPS proposals need your judgement, especially on nearby parallel roads. Inspect original tracks and direction before confirming the same road. Suggestions are not part of the comparison yet.</p>${suggested.map((m, i) => `<div class="suggestion"><span>${esc(rideName(m.rideId))} · pass ${m.pass}<small>GPS offsets ${m.startMiss.toFixed(0)} / ${m.endMiss.toFixed(0)} m · route offset ${m.routeError.toFixed(0)} m${m.gpsBridgeSeconds ? ` · GPS bridge ${m.gpsBridgeSeconds}s` : ""}</small></span><button class="text-button" data-suggestion-view="${i}">Preview</button><button class="text-button" data-suggestion-review="${i}">Inspect roads</button><button class="button small" data-suggestion-add="${i}">Add match</button></div>`).join("")}`
       : c.entries.length
         ? '<p class="subtle">No further verified matches among the loaded rides. Select another stretch on any ride tab to add an effort manually.</p>'
         : "";
-    $("comparison-method").textContent = c.entries.some(
-      (e) => e.kind === "effort",
-    )
-      ? "Manually paired efforts: these may be different roads. Distance-progress overlays do not establish equal effort or geographic correspondence. Same-road terrain attribution is disabled."
+    const rejected = c.matchDecisions || [];
+    if (rejected.length)
+      $("suggestions").insertAdjacentHTML(
+        "beforeend",
+        `<details id="rejected-matches"><summary>${rejected.length} rejected road pairings</summary>${rejected.map((decision, i) => `<p>${esc(rideName(decision.rideId))} · ${esc(decision.reason || "Rejected by you")} <button class="text-button" data-rejected-review="${i}">Review again</button></p>`).join("")}</details>`,
+      );
+    $("comparison-method").textContent = state.matches.some((e) => e.manual)
+      ? state.matches.some((e) => e.relation === "similar-terrain")
+        ? "Similar-terrain efforts: these may be different roads. Distance-progress overlays do not establish equal effort or geographic correspondence. Same-road terrain attribution is disabled."
+        : "Manually confirmed same road: original source boundaries remain independent and automatic road checks are overridden. Progress alignment is approximate; same-road terrain attribution is disabled for manual corrections."
       : "Selected stretches and accepted GPS matches. Interior alignment uses approximate distance progress.";
   }
+  function availability(c) {
+    const selected = c.entries.filter((e) => state.selected.includes(e.rideId));
+    const missing = c.entries.filter((e) => !state.selected.includes(e.rideId));
+    return {
+      selected,
+      missing,
+      label: !c.entries.length
+        ? "Empty"
+        : !selected.length
+          ? "No selected rides"
+          : missing.length
+            ? `Partial (${selected.length}/${c.entries.length})`
+            : c.id === collection.activeId &&
+                state.matches.length < c.entries.length
+              ? `Review matches (${state.matches.length}/${c.entries.length})`
+              : "Ready",
+    };
+  }
+  async function includeRides(ids) {
+    const missing = [...new Set(ids)].filter(
+      (id) => !state.selected.includes(id),
+    );
+    await Promise.all(missing.map(getRide));
+    state.selected = [...new Set([...state.selected, ...missing])];
+    persistSelection();
+    render();
+  }
+  $("include-missing-rides").onclick = () =>
+    task("Including missing rides…", () =>
+      includeRides(availability(active()).missing.map((e) => e.rideId)),
+    );
+  $("include-baseline-ride").onclick = () =>
+    task("Including baseline ride…", () => {
+      const entry = active().entries.find((e) => e.id === state.baseline);
+      return includeRides(entry ? [entry.rideId] : []);
+    });
   function editName(action = null) {
     pendingAction = action;
     $("comparison-name-editor").hidden = false;
@@ -419,7 +496,8 @@ export function createComparisonWorkspace({
     const previous = editing?.returnTo;
     editing = null;
     selectionChanged();
-    if (previous) await showRange(previous);
+    if (previous && state.selected.includes(previous.rideId))
+      await showRange(previous);
     else render();
   }
   $("source-stretches").onclick = (event) => {
@@ -563,7 +641,9 @@ export function createComparisonWorkspace({
               start: state.start,
               end: state.end,
               kind: "effort",
+              relation: "similar-terrain",
             });
+            delete entry.review;
             editing = null;
             entryFeedback = "Stretch updated in this comparison.";
           } else {
@@ -583,11 +663,16 @@ export function createComparisonWorkspace({
         }
       },
     );
-  $("comparison-entries").onclick = (e) => {
+  const entryAction = (e) => {
     const viewButton = e.target.closest("[data-entry-edit]"),
       removeButton = e.target.closest("[data-entry-remove]");
     if (viewButton)
       task("Editing stretch…", () => editEntry(viewButton.dataset.entryEdit));
+    const reviewButton = e.target.closest("[data-entry-review]");
+    if (reviewButton)
+      task("Inspecting road pairing…", () =>
+        reviewEntry(reviewButton.dataset.entryReview),
+      );
     if (removeButton)
       task("Removing stretch…", async () => {
         const c = active();
@@ -596,22 +681,52 @@ export function createComparisonWorkspace({
         c.entries = c.entries.filter(
           (x) => x.id !== removeButton.dataset.entryRemove,
         );
-        if (!c.entries.length) c.road = null;
+        if (!c.entries.length) {
+          c.road = null;
+          c.matchDecisions = [];
+        }
         render();
       });
+    const include = e.target.closest("[data-include-saved-ride]");
+    if (include)
+      task("Including saved ride…", () =>
+        includeRides([include.dataset.includeSavedRide]),
+      );
   };
+  $("comparison-entries").onclick = entryAction;
+  $("excluded-entries").onclick = entryAction;
   $("suggestions").onclick = (e) => {
+    const rejected = e.target.closest("[data-rejected-review]");
+    if (rejected) {
+      const decision = (active().matchDecisions || [])[
+        +rejected.dataset.rejectedReview
+      ];
+      if (decision)
+        task("Inspecting rejected pairing…", () =>
+          reviewRange(decision, { reason: decision.reason }),
+        );
+      return;
+    }
     const button = e.target.closest(
-      "[data-suggestion-add], [data-suggestion-view]",
+      "[data-suggestion-add], [data-suggestion-view], [data-suggestion-review]",
     );
     if (!button) return;
     const m =
       suggestions()[
-        Number(button.dataset.suggestionAdd ?? button.dataset.suggestionView)
+        Number(
+          button.dataset.suggestionAdd ??
+            button.dataset.suggestionView ??
+            button.dataset.suggestionReview,
+        )
       ];
     if (!m) return;
     task("Selecting suggested stretch…", async () => {
-      if (button.hasAttribute("data-suggestion-view")) {
+      if (button.hasAttribute("data-suggestion-review")) {
+        await reviewRange(
+          { rideId: m.rideId, start: m.startIndex, end: m.endIndex },
+          { automatic: true },
+        );
+      } else if (button.hasAttribute("data-suggestion-view")) {
         if (editing) await cancelEdit();
         rememberDraft();
         selectionChanged();
@@ -626,12 +741,118 @@ export function createComparisonWorkspace({
           start: m.startIndex,
           end: m.endIndex,
           kind: "matched",
+          relation: "same-road",
+          review: "confirmed",
         });
         entryFeedback = "Matching stretch added to this comparison.";
         render();
       }
     });
   };
+  async function reviewRange(range, extra = {}) {
+    if (!active().road) return;
+    const ride = await getRide(range.rideId);
+    const entry = active().entries.find(
+      (entry) =>
+        entry.rideId === range.rideId &&
+        Math.abs(entry.start - range.start) < 0.02 &&
+        Math.abs(entry.end - range.end) < 0.02,
+    );
+    if (entry?.kind === "source") return;
+    const verified = findMatches(
+      ride,
+      roadPoints(),
+      state.settings.matchRadius,
+    ).some(
+      (match) =>
+        Math.abs(match.startIndex - range.start) < 0.02 &&
+        Math.abs(match.endIndex - range.end) < 0.02,
+    );
+    reviewer.open({
+      reference: { ...active().road, points: roadPoints() },
+      candidate: {
+        ...range,
+        points: stretchPoints(ride.points, range.start, range.end),
+      },
+      name: rideName(range.rideId),
+      entryId: entry?.id || "",
+      reason: entry?.reviewReason || "",
+      ...extra,
+      automatic: verified,
+    });
+  }
+  async function reviewEntry(id) {
+    const entry = active().entries.find((entry) => entry.id === id);
+    if (entry) await reviewRange(entry);
+  }
+  const reviewer = createMatchReview({
+    esc,
+    task,
+    onDecision: async (review, action, reason) => {
+      const c = active(),
+        previous = structuredClone(c),
+        candidate = review.candidate;
+      const sameRange = (entry) =>
+        entry.rideId === candidate.rideId &&
+        coversSuggestedPass(
+          entry,
+          { startIndex: candidate.start, endIndex: candidate.end },
+          loaded.get(candidate.rideId).points,
+          95,
+        );
+      try {
+        c.matchDecisions = (c.matchDecisions || []).filter(
+          (decision) => !sameRange(decision),
+        );
+        const entry = c.entries.find((entry) => entry.id === review.entryId);
+        if (action === "rejected") {
+          if (c.matchDecisions.length >= 500)
+            throw new Error("This comparison already has 500 road decisions.");
+          c.matchDecisions.push({
+            rideId: candidate.rideId,
+            start: candidate.start,
+            end: candidate.end,
+            decision: "rejected",
+            reason,
+          });
+          if (entry) {
+            entry.review = "rejected";
+            entry.reviewReason = reason;
+          }
+        } else {
+          const fields = {
+            kind:
+              action === "same-road" && review.automatic ? "matched" : "effort",
+            relation: action,
+            review: "confirmed",
+            reviewReason: reason,
+          };
+          if (entry) Object.assign(entry, fields);
+          else
+            add({
+              rideId: candidate.rideId,
+              start: candidate.start,
+              end: candidate.end,
+              ...fields,
+            });
+        }
+        render();
+        await save();
+      } catch (error) {
+        Object.assign(c, previous);
+        render();
+        throw error;
+      }
+    },
+  });
+  $("inspect-pairing").onclick = () =>
+    task("Inspecting selected pairing…", () =>
+      reviewRange({
+        rideId: state.referenceId,
+        start: state.start,
+        end: state.end,
+      }),
+    );
   return {
     load,
     save,
@@ -644,6 +865,7 @@ export function createComparisonWorkspace({
     editEntry,
     selectionChanged,
     sourceStretches,
-    hasEfforts: () => active()?.entries.some((e) => e.kind === "effort"),
+    reviewEntry,
+    hasEfforts: () => state.matches.some((e) => e.manual),
   };
 }

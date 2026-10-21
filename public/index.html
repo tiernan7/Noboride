@@ -161,7 +161,10 @@
           </div>
           <div class="comparison-navigation">
             <label for="comparison-switch">Switch comparison</label>
-            <select id="comparison-switch"></select>
+            <select
+              id="comparison-switch"
+              title="Saved comparisons by currently selected rides"
+            ></select>
             <button id="new-comparison" class="button" disabled>
               New comparison
             </button>
@@ -197,7 +200,25 @@
           <button id="comparison-delete-cancel" class="button">Cancel</button>
         </div>
         <p id="comparison-status" role="status"></p>
+        <div
+          id="comparison-availability"
+          class="comparison-availability"
+          role="status"
+          hidden
+        >
+          <p id="comparison-availability-text"></p>
+          <button id="include-missing-rides" class="button small" hidden>
+            Include missing rides
+          </button>
+        </div>
         <ul id="comparison-entries" aria-label="Comparison stretches"></ul>
+        <details id="excluded-stretches" hidden>
+          <summary id="excluded-stretches-summary"></summary>
+          <ul
+            id="excluded-entries"
+            aria-label="Saved stretches from unselected rides"
+          ></ul>
+        </details>
       </section>
       <section id="welcome" class="panel welcome" hidden>
         <div class="empty-symbol">⌁</div>
@@ -325,6 +346,9 @@
               <p id="selection-context"></p>
             </div>
             <div class="stretch-actions">
+              <button id="inspect-pairing" class="button" hidden>
+                Inspect road pairing
+              </button>
               <button id="add-stretch" class="button primary">
                 Add to comparison</button
               ><button id="cancel-stretch-edit" class="text-button" hidden>
@@ -335,6 +359,125 @@
           </div>
         </section>
         <div id="suggestions" class="panel"></div>
+        <section
+          id="ride-story"
+          class="panel"
+          hidden
+          aria-labelledby="story-title"
+        >
+          <div class="section-title">
+            <div>
+              <div class="eyebrow">RIDE STORY / TERRAIN AND EFFORT</div>
+              <h2 id="story-title">Keep the climb in context</h2>
+              <p id="story-ride-name"></p>
+            </div>
+          </div>
+          <div class="story-controls">
+            <label
+              >Approach and aftermath<select id="story-context">
+                <option value="250">250 m each side</option>
+                <option value="500" selected>500 m each side</option>
+                <option value="1000">1 km each side</option>
+                <option value="2000">2 km each side</option>
+              </select></label
+            >
+            <label
+              >Horizontal axis<select id="story-axis">
+                <option value="d">Distance into ride</option>
+                <option value="t">Elapsed time into ride</option>
+              </select></label
+            >
+            <label class="check-label"
+              ><input id="story-full" type="checkbox" />Show full ride</label
+            >
+          </div>
+          <div class="story-grid">
+            <div>
+              <div id="story-charts"></div>
+              <label for="story-cursor">Shared cursor</label
+              ><input
+                id="story-cursor"
+                type="range"
+                min="0"
+                max="1"
+                step="1"
+              /><output id="story-position" for="story-cursor"></output>
+              <p id="story-surroundings" class="data-note"></p>
+            </div>
+            <div>
+              <div
+                id="story-map"
+                aria-label="Ride story map with shared cursor"
+              ></div>
+              <p class="map-hint">
+                Original recorded coordinates · no online map tiles. S/E delimit
+                the selection; the shared cursor shows its surroundings.
+              </p>
+            </div>
+          </div>
+          <details class="terrain-settings">
+            <summary>Climb detection assumptions</summary>
+            <p>
+              Terrain suggestions use elevation only: hills need at least 1%
+              average gradient and 10 m net gain over 80 m, separated by 3 m
+              dips. Ramps sustain at least 6% over 50 m. A fixed 50 m gradient
+              window identifies ramps. Missing elevation and recording breaks
+              separate passages. These are editable suggestions, not official
+              climb categories.
+            </p>
+            <div class="story-controls">
+              <label
+                >Maximum dip inside a passage<select id="passage-dip">
+                  <option value="5">5 m</option>
+                  <option value="15" selected>15 m</option>
+                  <option value="30">30 m</option>
+                </select></label
+              ><label
+                >Maximum separation between hills<select id="passage-gap">
+                  <option value="250">250 m</option>
+                  <option value="500" selected>500 m</option>
+                  <option value="1000">1 km</option>
+                </select></label
+              >
+            </div>
+            <p>
+              These controls preview detection. Saved boundary corrections stay
+              attached to the activity.
+            </p>
+          </details>
+          <h3>Climbing passages, hills and ramps</h3>
+          <p>
+            Select terrain to inspect it with its approach and aftermath.
+            Nothing is added to the comparison automatically.
+          </p>
+          <div id="climb-tree"></div>
+          <fieldset id="climb-editor" hidden>
+            <legend>Correct the selected terrain</legend>
+            <label>Name<input id="climb-name" maxlength="120" /></label
+            ><label
+              >Climb start position<input
+                id="climb-start"
+                type="range"
+                min="0"
+                max="1"
+                step="1" /></label
+            ><label
+              >Climb end position<input
+                id="climb-end"
+                type="range"
+                min="1"
+                max="1"
+                step="1"
+            /></label>
+            <p id="climb-boundaries"></p>
+            <button id="climb-save" class="button primary">
+              Save climb boundaries</button
+            ><button id="climb-reset" class="button">
+              Restore detected boundaries
+            </button>
+            <p id="climb-status" role="status"></p>
+          </fieldset>
+        </section>
         <section class="panel">
           <div class="section-title">
             <div>
@@ -355,6 +498,12 @@
               Negative Δ means faster. GPS offsets show start / end miss
               distance.
             </p>
+          </div>
+          <div id="baseline-notice" class="comparison-availability" hidden>
+            <p id="baseline-notice-text"></p>
+            <button id="include-baseline-ride" class="button small" hidden>
+              Include baseline ride
+            </button>
           </div>
           <div id="matches" class="table-scroll"></div>
           <p class="data-note" id="timing-note"></p>
@@ -419,6 +568,53 @@
         >
       </footer>
     </main>
+    <dialog id="match-review" aria-labelledby="match-review-title">
+      <div class="modal-head">
+        <h2 id="match-review-title">Inspect road pairing</h2>
+        <button
+          class="icon-button"
+          data-close="match-review"
+          aria-label="Close match review"
+        >
+          ×
+        </button>
+      </div>
+      <p id="match-review-summary"></p>
+      <p>
+        <strong class="reference-key">Blue: selected reference road</strong> ·
+        <strong class="candidate-key">Orange: candidate, start → end</strong>
+      </p>
+      <div
+        id="match-review-map"
+        aria-label="Original reference and candidate route geometry"
+      ></div>
+      <div id="match-review-metrics"></div>
+      <h3>Inspect shape discrepancies</h3>
+      <div id="match-review-divergence"></div>
+      <label
+        >Reason or correction (optional)<textarea
+          id="match-review-reason"
+          maxlength="500"
+          rows="2"
+        ></textarea>
+      </label>
+      <p id="match-review-status" role="alert"></p>
+      <div class="match-review-actions">
+        <button id="match-confirm" class="button primary">
+          Confirm same road</button
+        ><button id="match-similar" class="button">
+          Compare similar terrain</button
+        ><button id="match-reject" class="button danger">
+          Reject this pairing
+        </button>
+      </div>
+      <p class="data-note">
+        Confirmation records your judgement, not GPS certainty. Manual
+        corrections retain their own source boundaries and bypass automatic
+        checks. Same-road terrain attribution remains unavailable for manually
+        selected or similar-terrain efforts.
+      </p>
+    </dialog>
     <dialog id="help-dialog">
       <div class="modal-head">
         <h2>A better answer to “where did I get faster?”</h2>
