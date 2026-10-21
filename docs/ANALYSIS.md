@@ -16,7 +16,9 @@ Suggestion de-duplication compares overlapping ranges on the same recording usin
 
 ## Ride story and nested terrain (dev)
 
-The linked source view, terrain hierarchy and correctable road review are documented in [RIDE-STORY.md](RIDE-STORY.md). Terrain detection is independent of effort channels and does not infer intent. Boundary corrections attach to stable activity/sample IDs without rewriting tracks. Source-story axes are distance or elapsed recording time and retain surrounding data. Route inspection uses original coordinates; human confirmations, automatic GPS verification and similar-terrain pairings remain distinct. Manual same-road corrections still suppress geographic terrain attribution. Rejections and their reasons persist per comparison and can be reversed.
+The linked source view, terrain hierarchy and correctable road review are documented in [RIDE-STORY.md](RIDE-STORY.md). Terrain detection is independent of effort channels and does not infer intent. Boundary corrections attach to comparison-local section IDs and stable source sample positions without rewriting tracks. Source-story axes are distance or elapsed recording time and retain surrounding data. Route inspection uses original coordinates; human confirmations, automatic GPS verification and similar-terrain pairings remain distinct. Manual same-road corrections still suppress geographic terrain attribution. Rejections and their reasons persist per comparison and can be reversed.
+
+The linked view is now integrated into the single Ride browser: one map, one set of source traces and shared boundaries serve terrain editing and comparison stretches. Brushing uses the displayed distance/time axis and selects original integer sample indices. Comparison rows retain their fractional saved endpoints until explicitly updated. Choosing included terrain or an accepted stretch opens the same linked comparison section. Add creates its definition and included range together; Save changes updates both atomically within the active comparison. The presentation changes do not modify matching, statistics or source samples.
 
 ## Import normalization
 

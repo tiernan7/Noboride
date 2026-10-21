@@ -2,8 +2,10 @@ import {
   comparisonNameKey,
   stretchPoints,
   coversSuggestedPass,
+  sectionCandidates,
 } from "/comparisons.mjs";
 import { findMatches } from "/analysis.mjs";
+import { detectClimbs } from "/ride-story.mjs";
 import { createMatchReview } from "/match-review.js";
 
 // HTTP over the local network lacks randomUUID on some mobile browsers.
@@ -25,6 +27,9 @@ export function createComparisonWorkspace({
   esc,
   rideName,
   persistSelection,
+  onOpenRange,
+  getSection,
+  onSavedSection,
 }) {
   const $ = (id) => document.getElementById(id);
   let collection = { activeId: "", items: [] },
@@ -34,12 +39,16 @@ export function createComparisonWorkspace({
     timer,
     editing = null,
     entryFeedback = "";
+  const resolutionCache = new Map();
   const active = () =>
     collection.items.find((c) => c.id === collection.activeId);
+  const hasWork = (c) =>
+    c.entries.length || c.sections?.some((section) => !section.deleted);
   const fresh = () => ({
     id: newId(),
     name: "",
     entries: [],
+    sections: [],
     road: null,
     selected: [...state.selected],
     browse: null,
@@ -84,6 +93,17 @@ export function createComparisonWorkspace({
   }
   async function save() {
     clearTimeout(timer);
+    // Review actions may adjust an included range; keep its section in the same transaction.
+    for (const c of collection.items)
+      for (const entry of c.entries) {
+        const section = c.sections?.find(
+          (item) => item.rideId === entry.rideId && item.id === entry.sectionId,
+        );
+        if (section) {
+          section.start = entry.start;
+          section.end = entry.end;
+        }
+      }
     snapshot();
     const body = json("PUT", collection);
     writes = writes.catch(() => {}).then(() => api("/api/comparisons", body));
@@ -113,6 +133,7 @@ export function createComparisonWorkspace({
     );
   }
   async function activate(id, { restoreSelection = false } = {}) {
+    onOpenRange?.();
     deletionTarget = null;
     pendingAction = null;
     $("comparison-delete-confirm").hidden = true;
@@ -122,6 +143,21 @@ export function createComparisonWorkspace({
     collection.activeId = id;
     const c = active();
     c.matchDecisions ||= [];
+    if (c.sections === undefined) {
+      // One-time copies for pre-section workspaces; subsequent edits stay inside each comparison.
+      const used = new Set([
+        ...c.selected,
+        ...c.entries.map((entry) => entry.rideId),
+      ]);
+      c.sections = state.rides
+        .filter((ride) => used.has(ride.id))
+        .flatMap((ride) =>
+          (ride.climbEdits || []).map((section) => ({
+            ...section,
+            rideId: ride.id,
+          })),
+        );
+    }
     const available = new Set(state.rides.map((r) => r.id));
     state.selected = (restoreSelection ? c.selected : state.selected).filter(
       (id) => available.has(id),
@@ -259,7 +295,225 @@ export function createComparisonWorkspace({
         : [];
     });
   }
+  function sectionDefinitions(ride) {
+    const definitions = (active()?.sections || []).filter(
+      (item) => item.rideId === ride.id,
+    );
+    const available = detectClimbs(ride.points, definitions).map((item) => ({
+      ...item,
+      rideId: ride.id,
+    }));
+    const extra = [];
+    for (const entry of (active()?.entries || []).filter(
+      (item) => item.rideId === ride.id,
+    )) {
+      if (
+        entry.sectionId &&
+        definitions.some((item) => item.id === entry.sectionId)
+      )
+        continue;
+      const related =
+        !entry.sectionId &&
+        sectionCandidates(entry, [...available, ...extra], ride.points, 60);
+      if (related?.length) continue;
+      const id = entry.sectionId || `entry-${entry.id}`;
+      if (!extra.some((item) => item.id === id))
+        extra.push({
+          id,
+          rideId: ride.id,
+          start: entry.start,
+          end: entry.end,
+          kind: "section",
+          name: `Stretch ${active().entries.indexOf(entry) + 1}`,
+          manual: true,
+        });
+    }
+    return [...definitions, ...extra];
+  }
+  function entrySectionId(entry) {
+    if (entry.sectionId) return entry.sectionId;
+    const cacheKey = `${active().id}:${entry.id}:${entry.start}:${entry.end}`;
+    if (resolutionCache.has(cacheKey)) return resolutionCache.get(cacheKey);
+    const ride = loaded.get(entry.rideId);
+    if (!ride) return "";
+    const nodes = detectClimbs(ride.points, sectionDefinitions(ride)).map(
+      (node) => ({ ...node, rideId: ride.id }),
+    );
+    const id =
+      sectionCandidates(entry, nodes, ride.points, 60)[0]?.candidate.id || "";
+    resolutionCache.set(cacheKey, id);
+    return id;
+  }
+  function sectionMembers(section) {
+    return (active()?.entries || []).filter(
+      (entry) =>
+        entry.rideId === section.rideId && entrySectionId(entry) === section.id,
+    );
+  }
+  function sectionForRange(range) {
+    const ride = loaded.get(range.rideId);
+    const nodes = detectClimbs(ride.points, sectionDefinitions(ride)).map(
+      (node) => ({ ...node, rideId: ride.id }),
+    );
+    return (
+      sectionCandidates(range, nodes, ride.points, 90)[0]?.candidate || {
+        id: `manual-${newId()}`,
+        rideId: ride.id,
+        start: range.start,
+        end: range.end,
+        kind: "section",
+        name: `Stretch ${active().entries.length + 1}`,
+        manual: true,
+      }
+    );
+  }
+  function putDefinition(section) {
+    resolutionCache.clear();
+    const c = active();
+    c.sections = (c.sections || []).filter(
+      (item) => item.rideId !== section.rideId || item.id !== section.id,
+    );
+    c.sections.push({
+      id: section.id,
+      rideId: section.rideId,
+      start: section.start,
+      end: section.end,
+      kind: section.kind,
+      name: section.name.trim(),
+      ...(section.manual ? { manual: true } : {}),
+      ...(section.deleted ? { deleted: true } : {}),
+    });
+  }
+  async function saveSection(section, { include = false } = {}) {
+    const previous = structuredClone(collection),
+      previousEditing = structuredClone(editing);
+    try {
+      const ride = loaded.get(section.rideId),
+        c = active();
+      if (!section.name.trim())
+        throw new Error("Give the section a name before saving.");
+      if (section.isNew) {
+        const equivalent = sectionCandidates(
+          section,
+          detectClimbs(ride.points, sectionDefinitions(ride))
+            .filter(
+              (node) =>
+                node.kind === section.kind ||
+                (Math.abs(node.start - section.start) < 0.02 &&
+                  Math.abs(node.end - section.end) < 0.02),
+            )
+            .map((node) => ({ ...node, rideId: ride.id })),
+          ride.points,
+          90,
+        )[0]?.candidate;
+        if (equivalent)
+          section = {
+            ...section,
+            id: equivalent.id,
+            manual: equivalent.manual,
+          };
+      }
+      const members = sectionMembers(section);
+      let entry = editing && c.entries.find((item) => item.id === editing.id);
+      entry ||= members.length === 1 ? members[0] : null;
+      if (!entry && members.length > 1)
+        throw new Error(
+          "This section has multiple existing versions. Select a comparison version before saving; remove unwanted versions from the comparison list.",
+        );
+      if (
+        (include || entry) &&
+        c.entries.some(
+          (other) =>
+            other.id !== entry?.id &&
+            other.rideId === section.rideId &&
+            Math.abs(other.start - section.start) < 0.02 &&
+            Math.abs(other.end - section.end) < 0.02,
+        )
+      )
+        throw new Error(
+          "That stretch is already included. Select its existing section to edit it.",
+        );
+      putDefinition(section);
+      if (entry) {
+        const changed =
+          entry.start !== section.start || entry.end !== section.end;
+        Object.assign(entry, {
+          sectionId: section.id,
+          start: section.start,
+          end: section.end,
+        });
+        if (changed) {
+          entry.kind = "effort";
+          entry.relation = "similar-terrain";
+          delete entry.review;
+        }
+      } else if (include) {
+        add({
+          rideId: ride.id,
+          start: section.start,
+          end: section.end,
+          sectionId: section.id,
+          kind: "effort",
+        });
+        entry = c.entries.at(-1);
+      }
+      if (entry)
+        editing = {
+          id: entry.id,
+          start: Math.floor(entry.start),
+          end: Math.ceil(entry.end),
+          returnTo: editorRange(),
+        };
+      await save();
+      onSavedSection?.(section, entry);
+      entryFeedback = entry
+        ? "Section saved in this comparison."
+        : "Section saved. Add it to the comparison when ready.";
+      render();
+      return section;
+    } catch (error) {
+      collection = previous;
+      editing = previousEditing;
+      resolutionCache.clear();
+      throw error;
+    }
+  }
+  async function deleteSection(section) {
+    const previous = structuredClone(collection),
+      previousEditing = structuredClone(editing);
+    try {
+      const c = active(),
+        members = sectionMembers(section);
+      const original =
+        c.sections.find(
+          (item) => item.rideId === section.rideId && item.id === section.id,
+        ) ||
+        detectClimbs(
+          loaded.get(section.rideId).points,
+          sectionDefinitions(loaded.get(section.rideId)),
+        ).find((item) => item.id === section.id) ||
+        section;
+      c.entries = c.entries.filter(
+        (entry) => !members.some((member) => member.id === entry.id),
+      );
+      putDefinition({ ...original, rideId: section.rideId, deleted: true });
+      if (!c.entries.length) {
+        c.road = null;
+        c.matchDecisions = [];
+      }
+      editing = null;
+      await save();
+      onOpenRange?.();
+      render();
+    } catch (error) {
+      collection = previous;
+      editing = previousEditing;
+      resolutionCache.clear();
+      throw error;
+    }
+  }
   function renderWorkspace() {
+    resolutionCache.clear();
     const c = active();
     if (!c) return;
     $("comparison-name").textContent = c.name || "Untitled comparison";
@@ -270,9 +524,9 @@ export function createComparisonWorkspace({
       )
       .join("");
     $("comparison-switch").value = c.id;
-    $("new-comparison").disabled = !c.entries.length;
+    $("new-comparison").disabled = !hasWork(c);
     $("delete-comparison").disabled =
-      collection.items.length === 1 && !c.entries.length && !c.name;
+      collection.items.length === 1 && !hasWork(c) && !c.name;
     $("comparison-count").textContent =
       `${state.matches.length} of ${c.entries.length} stretches available · ${new Set(state.matches.map((e) => e.rideId)).size} selected ride${new Set(state.matches.map((e) => e.rideId)).size === 1 ? "" : "s"}`;
     const coverage = availability(c);
@@ -293,11 +547,25 @@ export function createComparisonWorkspace({
       state.referenceId !== c.entries.find((e) => e.id === editing.id)?.rideId
     )
       editing = null;
+    const selectedSection = getSection?.();
+    const storedSection =
+      selectedSection &&
+      c.sections?.find(
+        (section) =>
+          section.rideId === selectedSection.rideId &&
+          section.id === selectedSection.id,
+      );
     const dirty =
-      editing && (state.start !== editing.start || state.end !== editing.end);
+      editing &&
+      (state.start !== editing.start ||
+        state.end !== editing.end ||
+        (selectedSection &&
+          (!storedSection ||
+            selectedSection.name !== storedSection.name ||
+            selectedSection.kind !== storedSection.kind)));
     const saved = sourceStretches();
     $("source-stretches").innerHTML = state.referenceId
-      ? `<p>${saved.length ? `${saved.length} saved stretch${saved.length === 1 ? "" : "es"} from this ride in this comparison. Select one to inspect or edit.` : "No stretches from this ride in this comparison yet."}</p><div>${saved.map((entry) => `<button class="button small" data-source-entry="${esc(entry.id)}" aria-pressed="${entry.editing}"><strong>Stretch ${entry.number}</strong><small>${esc(rangeLabel(entry))}</small></button>`).join("")}${saved.length ? '<button class="button small" id="another-stretch">Select another stretch</button>' : ""}</div>`
+      ? `<p>${saved.length ? `${saved.length} included section${saved.length === 1 ? "" : "s"} from this ride. Find them in Comparison sections below.` : "Select a suggested section or define your own range."}</p>${saved.length ? '<button class="button small" id="another-stretch">Select another stretch</button>' : ""}`
       : "";
     const duplicate = c.entries.some(
       (e) =>
@@ -305,13 +573,31 @@ export function createComparisonWorkspace({
         Math.abs(e.start - state.start) < 0.02 &&
         Math.abs(e.end - state.end) < 0.02,
     );
+    const ambiguous = selectedSection
+      ? sectionMembers(selectedSection).length > 1 && !editing
+      : !editing &&
+        loaded.has(state.referenceId) &&
+        sectionCandidates(
+          { rideId: state.referenceId, start: state.start, end: state.end },
+          c.entries,
+          loaded.get(state.referenceId).points,
+          90,
+        ).length > 1;
     $("add-stretch").disabled =
-      !state.referenceId || (editing ? !dirty : duplicate);
+      !state.referenceId ||
+      ambiguous ||
+      (editing ? !dirty : duplicate && !selectedSection?.isNew);
     $("add-stretch").textContent = editing
-      ? "Update stretch"
-      : duplicate
-        ? "Already in comparison"
-        : "Add to comparison";
+      ? selectedSection
+        ? "Save changes"
+        : "Update stretch"
+      : ambiguous
+        ? "Choose existing version"
+        : duplicate && selectedSection?.isNew
+          ? "Save existing section"
+          : duplicate
+            ? "Already in comparison"
+            : "Add to comparison";
     $("cancel-stretch-edit").hidden = !editing;
     $("cancel-stretch-edit").textContent = dirty ? "Cancel changes" : "Done";
     $("reset-selection").disabled = !state.referenceId;
@@ -331,16 +617,20 @@ export function createComparisonWorkspace({
           end: state.end,
         })
       : "Choose a source ride to select a stretch.";
-    $("selection-context").textContent = editing
-      ? `Editing stretch ${c.entries.findIndex((e) => e.id === editing.id) + 1} in “${c.name || "Untitled comparison"}”. Changes apply only when you update.`
-      : duplicate
-        ? `Already saved in “${c.name || "Untitled comparison"}”. Use Edit in the stretch list to change it.`
-        : `Preview only. Add this stretch to “${c.name || "Untitled comparison"}” to include it.`;
+    $("selection-context").textContent = ambiguous
+      ? "Several existing versions overlap this section. Select one in Comparison sections to edit it, or remove unwanted versions from the comparison list."
+      : editing
+        ? `Editing section ${c.entries.findIndex((e) => e.id === editing.id) + 1} in “${c.name || "Untitled comparison"}”. Save changes updates this section and its included range together.`
+        : duplicate && selectedSection?.isNew
+          ? "This range is already included. Save existing section updates it instead of adding a copy."
+          : duplicate
+            ? `Already saved in “${c.name || "Untitled comparison"}”. Use Edit in the stretch list to change it.`
+            : `Preview only. Add this stretch to “${c.name || "Untitled comparison"}” to include it.`;
     const renderEntries = (entries, excluded = false) =>
       entries
         .map(
           (e) =>
-            `<li class="${editing?.id === e.id ? "editing-stretch" : ""}"><div><strong>${c.entries.findIndex((x) => x.id === e.id) + 1}. ${esc(rideName(e.rideId))}</strong><small>${excluded ? "Ride not selected" : esc(rangeLabel(e))} · ${e.kind === "matched" ? "GPS matched" : e.kind === "source" ? "Selected road" : e.relation === "same-road" ? "Manually confirmed same road" : "Similar terrain · manually paired effort"}${e.review === "rejected" ? " · rejected: not analysed" : e.review === "confirmed" ? " · confirmed" : ""}${excluded || e.review === "rejected" || state.matches.some((m) => m.id === e.id) ? "" : " · unavailable under current matching settings"}</small></div>${excluded ? `<button class="text-button" data-include-saved-ride="${esc(e.rideId)}">Include ride</button>` : `<button class="text-button" data-entry-edit="${esc(e.id)}">Edit</button>${e.kind !== "source" ? `<button class="text-button" data-entry-review="${esc(e.id)}">Review road</button>` : ""}`}<button class="text-button danger" data-entry-remove="${esc(e.id)}">Remove</button></li>`,
+            `<li class="${editing?.id === e.id ? "editing-stretch" : ""}"><div><strong>${c.entries.findIndex((x) => x.id === e.id) + 1}. ${esc(rideName(e.rideId))}${e.sectionId ? ` · ${esc(c.sections?.find((section) => section.rideId === e.rideId && section.id === e.sectionId)?.name || "Section")}` : ""}</strong><small>${excluded ? "Ride not selected" : esc(rangeLabel(e))} · ${e.kind === "matched" ? "GPS matched" : e.kind === "source" ? "Selected road" : e.relation === "same-road" ? "Manually confirmed same road" : "Similar terrain · manually paired effort"}${e.review === "rejected" ? " · rejected: not analysed" : e.review === "confirmed" ? " · confirmed" : ""}${excluded || e.review === "rejected" || state.matches.some((m) => m.id === e.id) ? "" : " · unavailable under current matching settings"}</small></div>${excluded ? `<button class="text-button" data-include-saved-ride="${esc(e.rideId)}">Include ride</button>` : `<button class="text-button" data-entry-edit="${esc(e.id)}">Edit</button>${e.kind !== "source" ? `<button class="text-button" data-entry-review="${esc(e.id)}">Review road</button>` : ""}`}<button class="text-button danger" data-entry-remove="${esc(e.id)}">Remove</button></li>`,
         )
         .join("");
     $("comparison-entries").innerHTML = c.entries.length
@@ -372,7 +662,9 @@ export function createComparisonWorkspace({
       selected,
       missing,
       label: !c.entries.length
-        ? "Empty"
+        ? hasWork(c)
+          ? "Sections only"
+          : "Empty"
         : !selected.length
           ? "No selected rides"
           : missing.length
@@ -413,14 +705,14 @@ export function createComparisonWorkspace({
   async function navigate(target) {
     if (editing) await cancelEdit();
     snapshot();
-    if (active().entries.length && !active().name) {
+    if (hasWork(active()) && !active().name) {
       editName(target);
       renderWorkspace();
       return;
     }
     await save();
     if (target === "new") {
-      let c = collection.items.find((c) => !c.entries.length);
+      let c = collection.items.find((c) => !hasWork(c));
       if (!c) {
         if (collection.items.length >= 100)
           throw new Error("This workspace already has 100 comparisons.");
@@ -433,17 +725,25 @@ export function createComparisonWorkspace({
   }
   function add(entry) {
     const c = active();
+    let definition;
+    if (!entry.sectionId) {
+      definition = sectionForRange(entry);
+      entry.sectionId = definition.id;
+    }
     if (c.entries.length >= 200)
       throw new Error("This comparison already has 200 stretches.");
     if (
       c.entries.some(
         (e) =>
           e.rideId === entry.rideId &&
-          Math.abs(e.start - entry.start) < 0.02 &&
-          Math.abs(e.end - entry.end) < 0.02,
+          ((e.sectionId && e.sectionId === entry.sectionId) ||
+            (Math.abs(e.start - entry.start) < 0.02 &&
+              Math.abs(e.end - entry.end) < 0.02)),
       )
     )
       throw new Error("That stretch is already in this comparison.");
+    if (definition)
+      putDefinition({ ...definition, start: entry.start, end: entry.end });
     if (!c.road) {
       c.road = { rideId: entry.rideId, start: entry.start, end: entry.end };
       entry.kind = "source";
@@ -459,12 +759,44 @@ export function createComparisonWorkspace({
     state.referenceId = entry.rideId;
     state.start = Math.floor(entry.start);
     state.end = Math.ceil(entry.end);
+    onOpenRange?.(entry.id ? entry : undefined);
     persistSelection();
     render();
   }
-  function selectionChanged() {
+  function selectionChanged({ adopt = false } = {}) {
     $("stretch-status").textContent = "";
     $("stretch-status").classList.remove("error");
+    if (adopt && !editing && !getSection?.() && loaded.has(state.referenceId)) {
+      const candidates = sectionCandidates(
+        { rideId: state.referenceId, start: state.start, end: state.end },
+        active().entries,
+        loaded.get(state.referenceId).points,
+        90,
+      );
+      if (candidates.length === 1) {
+        const entry = candidates[0].candidate;
+        editing = {
+          id: entry.id,
+          start: Math.floor(entry.start),
+          end: Math.ceil(entry.end),
+          returnTo: editorRange(),
+        };
+        onOpenRange?.(entry);
+      }
+    }
+  }
+  function beginSelection(section) {
+    const members = section ? sectionMembers(section) : [];
+    const entry = members.length === 1 ? members[0] : null;
+    editing = entry
+      ? {
+          id: entry.id,
+          start: Math.floor(entry.start),
+          end: Math.ceil(entry.end),
+          returnTo: editorRange(),
+        }
+      : null;
+    $("stretch-status").textContent = "";
   }
   async function browseRide(id) {
     if (editing) await cancelEdit();
@@ -500,7 +832,7 @@ export function createComparisonWorkspace({
       await showRange(previous);
     else render();
   }
-  $("source-stretches").onclick = (event) => {
+  $("ride-browser").addEventListener("click", (event) => {
     const entry = event.target.closest("[data-source-entry]");
     if (entry)
       task("Opening saved stretch…", () =>
@@ -514,7 +846,7 @@ export function createComparisonWorkspace({
         const ride = loaded.get(rideId);
         await showRange({ rideId, start: 0, end: ride.points.length - 1 });
       });
-  };
+  });
   $("cancel-stretch-edit").onclick = () =>
     task("Closing stretch editor…", cancelEdit);
   $("reset-selection").onclick = () =>
@@ -625,37 +957,17 @@ export function createComparisonWorkspace({
             throw new Error(
               "Select at least 20 meters before adding a stretch.",
             );
-          if (editing) {
-            const entry = active().entries.find((e) => e.id === editing.id);
-            if (
-              active().entries.some(
-                (e) =>
-                  e.id !== entry.id &&
-                  e.rideId === ride.id &&
-                  Math.abs(e.start - state.start) < 0.02 &&
-                  Math.abs(e.end - state.end) < 0.02,
-              )
-            )
-              throw new Error("That stretch is already in this comparison.");
-            Object.assign(entry, {
-              start: state.start,
-              end: state.end,
-              kind: "effort",
-              relation: "similar-terrain",
-            });
-            delete entry.review;
-            editing = null;
-            entryFeedback = "Stretch updated in this comparison.";
-          } else {
-            add({
+          const section = getSection?.() || {
+            ...sectionForRange({
               rideId: ride.id,
               start: state.start,
               end: state.end,
-              kind: "effort",
-            });
-            entryFeedback = "Stretch added to this comparison.";
-          }
-          render();
+            }),
+            start: state.start,
+            end: state.end,
+          };
+          await saveSection(section, { include: true });
+          return;
         } catch (e) {
           $("stretch-status").textContent = e.message;
           $("stretch-status").classList.add("error");
@@ -676,11 +988,27 @@ export function createComparisonWorkspace({
     if (removeButton)
       task("Removing stretch…", async () => {
         const c = active();
+        const entry = c.entries.find(
+          (item) => item.id === removeButton.dataset.entryRemove,
+        );
+        const id = entry && entrySectionId(entry);
         if (editing?.id === removeButton.dataset.entryRemove)
           await cancelEdit();
         c.entries = c.entries.filter(
           (x) => x.id !== removeButton.dataset.entryRemove,
         );
+        if (
+          entry &&
+          !c.entries.some(
+            (item) =>
+              item.rideId === entry.rideId && entrySectionId(item) === id,
+          )
+        ) {
+          const original = c.sections.find(
+            (section) => section.rideId === entry.rideId && section.id === id,
+          );
+          if (original) original.deleted = true;
+        }
         if (!c.entries.length) {
           c.road = null;
           c.matchDecisions = [];
@@ -863,8 +1191,14 @@ export function createComparisonWorkspace({
     render: renderWorkspace,
     browseRide,
     editEntry,
+    beginSelection,
     selectionChanged,
     sourceStretches,
+    sectionDefinitions,
+    sectionMembers,
+    entrySectionId,
+    saveSection,
+    deleteSection,
     reviewEntry,
     hasEfforts: () => state.matches.some((e) => e.manual),
   };

@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Store } from "../lib/store.mjs";
 import {
   validateComparisons,
+  sectionCandidates,
   stretchPoints,
   coversSuggestedPass,
 } from "../lib/comparisons.mjs";
@@ -132,6 +133,90 @@ test("comparisons retain multiple entries from one ride and an independent basel
   assert.equal(result.items[0].baseline, "one-second");
   assert.equal(result.items[0].entries[1].kind, "effort");
   assert.deepEqual(result.items[0].matchDecisions, []);
+});
+test("section definitions and identities are scoped to one comparison and cannot drift or be included twice", () => {
+  const one = context("one", "First");
+  one.sections = [
+    {
+      id: "hill",
+      rideId: "ride",
+      start: 0,
+      end: 2,
+      kind: "hill",
+      name: "My hill",
+    },
+  ];
+  one.entries[0].sectionId = "hill";
+  const two = structuredClone(one);
+  two.id = "two";
+  two.name = "Second";
+  two.sections[0].name = "Other hill";
+  const result = validate({ activeId: "one", items: [one, two] });
+  assert.equal(result.items[0].sections[0].name, "My hill");
+  assert.equal(result.items[1].sections[0].name, "Other hill");
+  assert.deepEqual(one.sections, result.items[0].sections);
+  const duplicate = structuredClone(one);
+  duplicate.entries[1] = { ...duplicate.entries[0], id: "another-id" };
+  assert.throws(
+    () => validate({ activeId: "one", items: [duplicate] }),
+    /only be included once/,
+  );
+  for (const change of [{ end: 1.5 }, { sectionId: "missing" }]) {
+    const invalid = structuredClone(one);
+    Object.assign(invalid.entries[0], change);
+    assert.throws(
+      () => validate({ activeId: "one", items: [invalid] }),
+      /boundaries/,
+    );
+  }
+  const fractional = structuredClone(one);
+  const missingDefinitions = structuredClone(one);
+  delete missingDefinitions.sections;
+  assert.throws(
+    () => validate({ activeId: "one", items: [missingDefinitions] }),
+    /boundaries/,
+  );
+  fractional.sections[0].start = fractional.entries[0].start = 0.5;
+  assert.equal(
+    validate({ activeId: "one", items: [fractional] }).items[0].sections[0]
+      .start,
+    0.5,
+  );
+  const deleted = structuredClone(one);
+  deleted.sections[0].deleted = true;
+  assert.throws(
+    () => validate({ activeId: "one", items: [deleted] }),
+    /boundaries/,
+  );
+  deleted.entries = [];
+  deleted.road = null;
+  assert.equal(
+    validate({ activeId: "one", items: [deleted] }).items[0].sections[0]
+      .deleted,
+    true,
+  );
+});
+test("legacy section association uses recording-distance overlap and preserves distinct laps and ambiguous versions", () => {
+  const points = Array.from({ length: 21 }, (_, i) => ({ d: i * 10 }));
+  const candidates = [
+    { id: "first", rideId: "ride", start: 1, end: 9 },
+    { id: "lap-two", rideId: "ride", start: 11, end: 19 },
+    { id: "different-ride", rideId: "other", start: 1, end: 9 },
+  ];
+  const selected = { rideId: "ride", start: 2, end: 8 };
+  const related = sectionCandidates(selected, candidates, points);
+  assert.equal(related.length, 1);
+  assert.equal(related[0].candidate.id, "first");
+  assert.equal(related[0].score, 75);
+  assert.equal(sectionCandidates(selected, candidates, points, 80).length, 0);
+  assert.equal(
+    sectionCandidates(
+      selected,
+      [...candidates, { ...candidates[0], id: "old-copy" }],
+      points,
+    ).length,
+    2,
+  );
 });
 test("review decisions preserve manual same-road provenance and reject inconsistent automatic terrain labels", () => {
   const c = context("review", "Road review");

@@ -231,6 +231,8 @@ async function api(req, res, path) {
         "This ride is used in a comparison. Remove its comparison stretches first.",
       );
     for (const c of comparisons.items) {
+      if (c.sections)
+        c.sections = c.sections.filter((section) => section.rideId !== id);
       c.selected = c.selected.filter((rideId) => rideId !== id);
       c.drafts = (c.drafts || []).filter((d) => d.rideId !== id);
       c.matchDecisions = (c.matchDecisions || []).filter(
@@ -345,7 +347,12 @@ async function api(req, res, path) {
           .filter(
             (c) =>
               !incoming.items.some((x) => x.id === c.id) &&
-              !(incoming.items.length && !c.name && !c.entries.length),
+              !(
+                incoming.items.length &&
+                !c.name &&
+                !c.entries.length &&
+                !c.sections?.length
+              ),
           )
           .concat(incoming.items);
         store.saveComparisons(

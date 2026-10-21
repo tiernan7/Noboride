@@ -50,9 +50,7 @@ const loaded = new Map(),
 let comparisonWorkspace,
   rideStory,
   rideRename = null;
-let settingsTimeout,
-  hoverPoint = null,
-  profileDrag = null;
+let settingsTimeout;
 const ref = () => loaded.get(state.referenceId),
   included = () =>
     state.rides
@@ -229,18 +227,8 @@ function render() {
   $("workspace").hidden = !state.rides.length;
   renderControls();
   comparisonWorkspace.render();
-  if (ref()) {
-    renderProfile();
-    renderEndpoints();
-    mainMap.update(
-      [ref()],
-      comparisonWorkspace.sourceStretches(),
-      ref(),
-      state.start,
-      state.end,
-    );
-  } else {
-    $("profile").replaceChildren();
+  if (ref()) renderEndpoints();
+  else {
     for (const endpoint of ["start", "end"]) {
       $(`${endpoint}-label`).textContent = "—";
       $(`${endpoint}-coordinate`).value = "";
@@ -369,7 +357,7 @@ function renderSummary() {
 function changeRange(start, end) {
   state.start = start;
   state.end = end;
-  comparisonWorkspace.selectionChanged();
+  comparisonWorkspace.selectionChanged({ adopt: true });
   render();
   comparisonWorkspace.soon();
 }
@@ -422,7 +410,10 @@ class RouteMap {
     this.key = "";
     this.bounds = null;
     this.onSelect = onSelect;
-    new ResizeObserver(() => this.map.invalidateSize()).observe($(id));
+    new ResizeObserver(() => {
+      this.map.invalidateSize();
+      this.fit();
+    }).observe($(id));
   }
   update(rides, matches, reference, start, end) {
     this.layers.clearLayers();
@@ -505,7 +496,8 @@ class RouteMap {
         });
       }
     }
-    const key = rides.map((r) => r.id).join(":") + ":" + reference?.id;
+    const key =
+      rides.map((r) => r.viewKey || r.id).join(":") + ":" + reference?.id;
     this.bounds = bounds;
     if (bounds.isValid() && key !== this.key) {
       this.key = key;
@@ -518,7 +510,11 @@ class RouteMap {
   }
   fit() {
     if (this.bounds?.isValid())
-      this.map.fitBounds(this.bounds, { padding: [35, 35], maxZoom: 16 });
+      this.map.fitBounds(this.bounds, {
+        padding: [35, 35],
+        maxZoom: 16,
+        animate: false,
+      });
   }
   highlight(p) {
     this.hover.clearLayers();
@@ -535,147 +531,7 @@ class RouteMap {
 const mainMap = new RouteMap("map", (ll, type) => {
   if (type) selectOnMap(ll, type);
 });
-const storyMap = new RouteMap("story-map", (ll, type) => {
-  if (type) selectOnMap(ll, type);
-});
 const CH = { w: 780, h: 218, l: 48, r: 16, t: 20, b: 32 };
-function gradeColor(g) {
-  return g == null
-    ? "#ccd5de"
-    : g < 3
-      ? "#b4ceb4"
-      : g < 6
-        ? "#ebc16a"
-        : g < 9
-          ? "#e98a4d"
-          : g < 12
-            ? "#d95d53"
-            : "#a63b4d";
-}
-function profileHTML(points, start, end) {
-  if (points.length < 2) return "";
-  const g = gradeProfile(
-      points,
-      state.settings.gradeWindow,
-      state.settings.gapSeconds,
-    ),
-    alts = points.filter((p) => p.ele != null).map((p) => p.ele),
-    lo = alts.length ? alts.reduce((a, b) => Math.min(a, b), Infinity) - 5 : 0,
-    hi = alts.length
-      ? alts.reduce((a, b) => Math.max(a, b), -Infinity) + 5
-      : 100,
-    len = points.at(-1).d - points[0].d,
-    x = (p) =>
-      CH.l + (len ? (p.d - points[0].d) / len : 0) * (CH.w - CH.l - CH.r),
-    y = (v) => CH.h - CH.b - ((v - lo) / (hi - lo)) * (CH.h - CH.b - CH.t),
-    step = Math.max(1, Math.floor(points.length / 900));
-  let content = "";
-  for (let i = 0; i < points.length - 1; i += step) {
-    const j = Math.min(points.length - 1, i + step),
-      a = points[i],
-      b = points[j];
-    if (
-      a.ele == null ||
-      b.ele == null ||
-      b.breakBefore ||
-      b.t - a.t > state.settings.gapSeconds * 1000
-    )
-      continue;
-    content += `<path d="M${x(a)},${CH.h - CH.b}L${x(a)},${y(a.ele)}L${x(b)},${y(b.ele)}L${x(b)},${CH.h - CH.b}Z" fill="${gradeColor(g[i])}"/>`;
-  }
-  const grid = [0, 0.5, 1]
-    .map((f) => {
-      const v = lo + (hi - lo) * f;
-      return `<line x1="${CH.l}" x2="${CH.w - CH.r}" y1="${y(v)}" y2="${y(v)}" stroke="#e3e9ef"/><text x="${CH.l - 8}" y="${y(v) + 4}" text-anchor="end">${Math.round(v * (unit() === "imperial" ? 3.28084 : 1))}</text>`;
-    })
-    .join("");
-  return `<svg viewBox="0 0 ${CH.w} ${CH.h}" class="profile-svg" role="img" aria-label="Elevation profile. Drag to select a road section.">${grid}${content}<rect data-brush x="${x(points[start])}" y="${CH.t}" width="${Math.max(1, x(points[end]) - x(points[start]))}" height="${CH.h - CH.b - CH.t}" fill="#2075d3" opacity=".12"/>${[start, end].map((i, j) => `<line x1="${x(points[i])}" x2="${x(points[i])}" y1="${CH.t}" y2="${CH.h - CH.b}" stroke="${j ? "#d2764b" : "#287bd5"}" stroke-width="2" stroke-dasharray="4 3"/><text x="${x(points[i]) + (j ? -4 : 4)}" y="12" text-anchor="${j ? "end" : "start"}">${j ? "END" : "START"}</text>`).join("")}${[0, 0.25, 0.5, 0.75, 1].map((f) => `<text x="${CH.l + f * (CH.w - CH.l - CH.r)}" y="${CH.h - 8}" text-anchor="middle">${dist(len * f, 1)}</text>`).join("")}</svg><div class="chart-caption"><span data-profile-caption>Drag a range to select road</span><span>${state.settings.gradeWindow} m grade window</span></div>`;
-}
-function bindProfile(container, points, onRange, onHover) {
-  const svg = container.querySelector("svg");
-  if (!svg) return;
-  const locate = (clientX) => {
-    const box = svg.getBoundingClientRect(),
-      f = Math.max(
-        0,
-        Math.min(
-          1,
-          (((clientX - box.left) / box.width) * CH.w - CH.l) /
-            (CH.w - CH.l - CH.r),
-        ),
-      );
-    return lowerBound(
-      points,
-      points[0].d + (points.at(-1).d - points[0].d) * f,
-    );
-  };
-  svg.onpointerdown = (e) => {
-    if (e.button !== 0) return;
-    profileDrag = {
-      svg,
-      container,
-      points,
-      start: locate(e.clientX),
-      locate,
-      onRange,
-    };
-    e.preventDefault();
-  };
-  svg.onpointermove = (e) => {
-    if (profileDrag) return;
-    const i = locate(e.clientX),
-      g = gradeProfile(
-        points,
-        state.settings.gradeWindow,
-        state.settings.gapSeconds,
-      );
-    container.querySelector("[data-profile-caption]").textContent =
-      `${dist(points[i].d - points[0].d)} · ${elev(points[i].ele)} · ${num(g[i], 1)}%`;
-    onHover(points[i]);
-  };
-  svg.onpointerleave = () => {
-    if (!profileDrag) onHover(null);
-  };
-}
-function renderProfile() {
-  $("profile").innerHTML = profileHTML(ref().points, state.start, state.end);
-  const saved = comparisonWorkspace.sourceStretches();
-  if (saved.length) {
-    const points = ref().points,
-      length = points.at(-1).d - points[0].d,
-      x = (p) =>
-        CH.l +
-        (length ? (p.d - points[0].d) / length : 0) * (CH.w - CH.l - CH.r);
-    $("profile").insertAdjacentHTML(
-      "beforeend",
-      `<div class="saved-range-profile" aria-label="Saved stretches along this ride"><svg viewBox="0 0 ${CH.w} ${saved.length * 22}" aria-hidden="true">${saved.map((entry, i) => `<g data-saved-range="${esc(entry.id)}"><text x="${CH.l - 8}" y="${i * 22 + 15}" text-anchor="end">${entry.number}</text><line x1="${CH.l}" x2="${CH.w - CH.r}" y1="${i * 22 + 11}" y2="${i * 22 + 11}" stroke="#e3e9ef"/><rect x="${x(entry.points[0])}" y="${i * 22 + 5}" width="${Math.max(2, x(entry.points.at(-1)) - x(entry.points[0]))}" height="12" rx="4" fill="${color(entry.rideId)}" opacity="${entry.editing ? 1 : 0.65}"/></g>`).join("")}</svg></div>`,
-    );
-  }
-  bindProfile($("profile"), ref().points, changeRange, (p) =>
-    mainMap.highlight(p),
-  );
-}
-window.addEventListener("pointermove", (e) => {
-  if (!profileDrag) return;
-  const d = profileDrag,
-    i = d.locate(e.clientX),
-    points = d.points,
-    len = points.at(-1).d - points[0].d,
-    x = (k) =>
-      CH.l +
-      (len ? (points[k].d - points[0].d) / len : 0) * (CH.w - CH.l - CH.r),
-    r = d.svg.querySelector("[data-brush]");
-  r.setAttribute("x", Math.min(x(i), x(d.start)));
-  r.setAttribute("width", Math.max(1, Math.abs(x(i) - x(d.start))));
-});
-window.addEventListener("pointerup", (e) => {
-  if (!profileDrag) return;
-  const d = profileDrag,
-    i = d.locate(e.clientX);
-  profileDrag = null;
-  if (i !== d.start) d.onRange(Math.min(i, d.start), Math.max(i, d.start));
-});
-window.addEventListener("pointercancel", () => (profileDrag = null));
 function renderMatches() {
   const b = baseline();
   const savedBaseline = comparisonWorkspace
@@ -1320,29 +1176,41 @@ comparisonWorkspace = createComparisonWorkspace({
   esc,
   rideName,
   persistSelection,
+  onOpenRange: (entry) => rideStory?.openRange(entry),
+  getSection: () => rideStory?.selectedSection(),
+  onSavedSection: (section) => rideStory?.acceptSaved(section),
 });
 rideStory = createRideStory({
   state,
   loaded,
-  api,
-  json,
   task,
   esc,
   onRange: changeRange,
-  highlight: (point) => {
-    mainMap.highlight(point);
-    storyMap.highlight(point);
-  },
+  onChooseSection: (section) => comparisonWorkspace.beginSelection(section),
+  definitions: (ride) => comparisonWorkspace.sectionDefinitions(ride),
+  members: (section) => comparisonWorkspace.sectionMembers(section),
+  entrySectionId: (entry) => comparisonWorkspace.entrySectionId(entry),
+  saveSection: (section) => comparisonWorkspace.saveSection(section),
+  deleteSection: (section) => comparisonWorkspace.deleteSection(section),
+  onDraftChange: () => comparisonWorkspace.render(),
+  savedRanges: () => comparisonWorkspace.sourceStretches(),
+  onSavedRange: (id) => comparisonWorkspace.editEntry(id, { scroll: false }),
+  color,
+  highlight: (point) => mainMap.highlight(point),
   updateMap: (ride, window, start, end) => {
-    storyMap.key = "";
-    storyMap.update(
+    mainMap.update(
       [
         {
-          id: ride.id,
+          ...ride,
+          viewKey: `${ride.id}:${window.start}:${window.end}`,
           points: ride.points.slice(window.start, window.end + 1),
         },
       ],
-      [],
+      comparisonWorkspace
+        .sourceStretches()
+        .filter(
+          (entry) => entry.end >= window.start && entry.start <= window.end,
+        ),
       ride,
       start,
       end,

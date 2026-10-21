@@ -774,7 +774,6 @@ main {
   min-width: 0;
   padding-top: 12px;
 }
-#profile svg,
 #comparison-chart svg {
   width: 100%;
   display: block;
@@ -784,10 +783,6 @@ svg text {
   font-family: inherit;
   font-size: 10px;
   fill: #8090a2;
-}
-.profile-svg {
-  touch-action: none;
-  cursor: crosshair;
 }
 .chart-caption {
   font-size: 9px;
@@ -1272,9 +1267,6 @@ dialog > p {
   .profile-column {
     padding-top: 0;
   }
-  .profile-column .profile-svg {
-    max-height: 210px;
-  }
   .context-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1392,9 +1384,6 @@ dialog > p {
   }
   .chart-heading select {
     max-width: 140px;
-  }
-  .profile-column .profile-svg {
-    max-height: none;
   }
   #map {
     height: 280px;
@@ -1551,14 +1540,6 @@ dialog > p {
   align-items: center;
   padding: 8px 0;
 }
-.story-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(240px, 1fr);
-  gap: 24px;
-}
-.story-grid > div {
-  min-width: 0;
-}
 #story-charts svg {
   display: block;
   width: 100%;
@@ -1567,9 +1548,7 @@ dialog > p {
 #story-charts svg text {
   font-size: 11px;
 }
-#story-cursor,
-#climb-start,
-#climb-end {
+#story-cursor {
   width: 100%;
 }
 #story-position {
@@ -1577,18 +1556,12 @@ dialog > p {
   color: var(--muted);
   font-size: 12px;
 }
-#story-map {
-  height: 380px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #edf2f6;
-}
 .terrain-settings {
   margin: 18px 0;
   color: var(--muted);
 }
 #climb-tree {
-  max-height: 450px;
+  max-height: 290px;
   overflow-y: auto;
 }
 #climb-tree ul {
@@ -1632,12 +1605,6 @@ dialog > p {
   max-width: 100%;
 }
 @media (max-width: 800px) {
-  .story-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  #story-map {
-    height: 280px;
-  }
   .story-controls label {
     max-width: 100%;
   }
@@ -1691,4 +1658,99 @@ dialog > p {
 #rejected-matches {
   margin-top: 16px;
   color: var(--muted);
+}
+
+/* One browser owns the map, terrain selection and comparison actions. */
+#ride-browser .studio-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  align-items: start;
+}
+#ride-browser .profile-column {
+  padding-top: 0;
+}
+#ride-browser #map {
+  height: 350px;
+}
+#ride-browser .story-controls {
+  gap: 10px;
+  margin-bottom: 10px;
+}
+#ride-browser .story-controls label {
+  font-size: 11px;
+}
+#ride-browser .story-controls select {
+  font-size: 11px;
+}
+#story-charts .story-traces {
+  cursor: crosshair;
+  user-select: none;
+}
+#story-charts [data-saved-range] {
+  cursor: pointer;
+  outline-offset: 2px;
+}
+#story-charts [data-saved-range]:focus rect {
+  stroke: #20334a;
+  stroke-width: 2;
+}
+.terrain-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 20px 0 10px;
+}
+.terrain-heading p,
+.chart-hint {
+  font-size: 11px;
+  margin: 5px 0 10px;
+  color: var(--muted);
+}
+.surroundings-details {
+  margin: 14px 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.surroundings-details summary {
+  cursor: pointer;
+}
+.selection-actions {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--border);
+  margin-top: 20px;
+  padding-top: 16px;
+  align-items: start;
+}
+.selection-actions #climb-editor {
+  flex: 1 1 290px;
+  min-width: 0;
+  margin: 0;
+}
+.selection-actions .stretch-action-row {
+  flex: 1 1 320px;
+  min-width: 0;
+  border: 0;
+  margin: 0;
+  padding: 12px 0;
+}
+.selection-actions button {
+  margin: 4px 4px 4px 0;
+}
+#climb-error {
+  color: #a14f3c;
+}
+@media (max-width: 1050px) {
+  #ride-browser .studio-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  #ride-browser #map {
+    height: 290px;
+  }
+}
+
+.section-version {
+  margin: 0 6px 8px 0;
 }

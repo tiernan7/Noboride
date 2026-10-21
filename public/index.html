@@ -237,17 +237,21 @@
       </section>
       <div id="workspace" hidden>
         <div id="summary" class="summary-grid"></div>
-        <section class="panel studio">
+        <section
+          id="ride-browser"
+          class="panel studio"
+          aria-labelledby="story-title"
+        >
           <div class="section-title">
             <div>
-              <div class="eyebrow">01 / ADD SOURCE STRETCHES</div>
-              <h2>Select a stretch</h2>
+              <div class="eyebrow">01 / EXPLORE AND SELECT</div>
+              <h2 id="story-title">Ride browser</h2>
               <p>
-                Choose a ride tab, select a range, then add it to this
-                comparison.
+                Choose a ride or section. Drag across any trace, move a map
+                marker, or adjust the shared boundaries.
               </p>
+              <p id="story-ride-name"></p>
             </div>
-            <button id="reset-selection" class="text-button">Full ride</button>
           </div>
           <div class="studio-controls">
             <div>
@@ -277,88 +281,205 @@
             class="source-stretches"
             aria-label="Stretches from this ride in the active comparison"
           ></div>
-          <div
-            class="studio-grid"
-            id="source-editor"
-            role="tabpanel"
-            aria-label="Selected source ride"
-          >
-            <div class="map-column">
-              <div class="map-toolbar">
-                <button id="fit-map" class="text-button">Fit routes</button>
+          <div id="ride-story" hidden>
+            <div
+              class="studio-grid"
+              id="source-editor"
+              role="tabpanel"
+              aria-label="Selected source ride"
+            >
+              <div class="map-column">
+                <div class="map-toolbar">
+                  <button id="fit-map" class="text-button">Fit routes</button>
+                  <button id="reset-selection" class="text-button">
+                    Select full ride
+                  </button>
+                </div>
+                <div
+                  id="map"
+                  aria-label="Source ride, saved stretches and shared cursor"
+                ></div>
+                <p id="map-hint" class="map-hint">
+                  Routes only · original recorded coordinates, drawn locally.
+                </p>
+                <div class="terrain-heading">
+                  <div>
+                    <h3>Comparison sections</h3>
+                    <p>Suggestions and saved sections for this comparison.</p>
+                  </div>
+                  <button id="climb-new" class="button small">
+                    New section
+                  </button>
+                </div>
+                <div id="climb-tree"></div>
+                <details class="terrain-settings">
+                  <summary>Climb detection assumptions</summary>
+                  <p>
+                    Terrain suggestions use elevation only: hills need at least
+                    1% average gradient and 10 m net gain over 80 m, separated
+                    by 3 m dips. Ramps sustain at least 6% over 50 m. A fixed 50
+                    m gradient window identifies ramps. Missing elevation and
+                    recording breaks separate passages. These are editable
+                    suggestions, not official climb categories.
+                  </p>
+                  <div class="story-controls">
+                    <label
+                      >Maximum dip inside a passage<select id="passage-dip">
+                        <option value="5">5 m</option>
+                        <option value="15" selected>15 m</option>
+                        <option value="30">30 m</option>
+                      </select></label
+                    ><label
+                      >Maximum separation between hills<select id="passage-gap">
+                        <option value="250">250 m</option>
+                        <option value="500" selected>500 m</option>
+                        <option value="1000">1 km</option>
+                      </select></label
+                    >
+                  </div>
+                  <p>
+                    These controls preview detection. Saved boundary corrections
+                    stay attached to the activity.
+                  </p>
+                </details>
               </div>
-              <div id="map" aria-label="Source ride and selected stretch"></div>
-              <p id="map-hint" class="map-hint">
-                Routes only · drawn locally from your ride data.
-              </p>
-            </div>
-            <div class="profile-column">
-              <div id="profile"></div>
-              <div class="endpoint start">
-                <div><strong>Start</strong><span id="start-label"></span></div>
+              <div class="profile-column">
+                <div class="story-controls">
+                  <label
+                    >Approach and aftermath<select id="story-context">
+                      <option value="250">250 m each side</option>
+                      <option value="500" selected>500 m each side</option>
+                      <option value="1000">1 km each side</option>
+                      <option value="2000">2 km each side</option>
+                    </select></label
+                  >
+                  <label
+                    >Horizontal axis<select id="story-axis">
+                      <option value="d">Distance into ride</option>
+                      <option value="t">Elapsed time into ride</option>
+                    </select></label
+                  >
+                  <label class="check-label"
+                    ><input id="story-full" type="checkbox" checked />Show full
+                    ride</label
+                  >
+                </div>
+                <div id="story-charts"></div>
+                <p class="chart-hint">
+                  Drag across a trace to select a range. Hover or use the cursor
+                  to inspect it.
+                </p>
+                <label for="story-cursor">Shared cursor</label>
                 <input
-                  id="start-range"
+                  id="story-cursor"
                   type="range"
                   min="0"
                   max="1"
-                  aria-label="Start position along source ride"
+                  step="1"
                 />
-                <details class="coordinate-details">
-                  <summary>GPS coordinates</summary>
-                  <div class="coordinate-row">
-                    <input
-                      id="start-coordinate"
-                      aria-label="Start GPS coordinates"
-                      placeholder="Latitude, longitude"
-                    /><button id="snap-start" class="text-button">
-                      Snap to ride
-                    </button>
+                <output id="story-position" for="story-cursor"></output>
+                <div class="endpoint start">
+                  <div>
+                    <strong>Start</strong><span id="start-label"></span>
                   </div>
+                  <input
+                    id="start-range"
+                    type="range"
+                    min="0"
+                    max="1"
+                    aria-label="Start position along source ride"
+                  />
+                  <details class="coordinate-details">
+                    <summary>GPS coordinates</summary>
+                    <div class="coordinate-row">
+                      <input
+                        id="start-coordinate"
+                        aria-label="Start GPS coordinates"
+                        placeholder="Latitude, longitude"
+                      /><button id="snap-start" class="text-button">
+                        Snap to ride
+                      </button>
+                    </div>
+                  </details>
+                </div>
+                <div class="endpoint end">
+                  <div><strong>End</strong><span id="end-label"></span></div>
+                  <input
+                    id="end-range"
+                    type="range"
+                    min="1"
+                    max="2"
+                    aria-label="End position along source ride"
+                  />
+                  <details class="coordinate-details">
+                    <summary>GPS coordinates</summary>
+                    <div class="coordinate-row">
+                      <input
+                        id="end-coordinate"
+                        aria-label="End GPS coordinates"
+                        placeholder="Latitude, longitude"
+                      /><button id="snap-end" class="text-button">
+                        Snap to ride
+                      </button>
+                    </div>
+                  </details>
+                </div>
+                <details class="surroundings-details">
+                  <summary>Selection surroundings and data notes</summary>
+                  <p id="story-surroundings" class="data-note"></p>
                 </details>
               </div>
-              <div class="endpoint end">
-                <div><strong>End</strong><span id="end-label"></span></div>
-                <input
-                  id="end-range"
-                  type="range"
-                  min="1"
-                  max="2"
-                  aria-label="End position along source ride"
-                />
-                <details class="coordinate-details">
-                  <summary>GPS coordinates</summary>
-                  <div class="coordinate-row">
-                    <input
-                      id="end-coordinate"
-                      aria-label="End GPS coordinates"
-                      placeholder="Latitude, longitude"
-                    /><button id="snap-end" class="text-button">
-                      Snap to ride
-                    </button>
-                  </div>
-                </details>
+            </div>
+            <div class="selection-actions">
+              <fieldset id="climb-editor" hidden>
+                <legend id="climb-editor-title">
+                  Correct the selected terrain
+                </legend>
+                <label id="climb-kind-label" hidden
+                  >Type<select id="climb-kind">
+                    <option value="section">Section (any terrain)</option>
+                    <option value="passage">Passage</option>
+                    <option value="hill" selected>Hill</option>
+                    <option value="ramp">Ramp</option>
+                  </select></label
+                >
+                <label>Name<input id="climb-name" maxlength="120" /></label>
+                <p class="data-note">
+                  Use the shared Start and End controls above to adjust this
+                  section.
+                </p>
+                <button id="climb-reset" class="button">
+                  Restore suggestion
+                </button>
+                <button id="climb-delete" class="button" hidden>
+                  Delete section from comparison
+                </button>
+                <button id="climb-cancel" class="button" hidden>Cancel</button>
+                <p id="climb-error" role="alert"></p>
+                <p id="climb-status" role="status"></p>
+              </fieldset>
+              <div class="stretch-action-row">
+                <div>
+                  <strong id="selection-summary"></strong>
+                  <p id="selection-context"></p>
+                </div>
+                <div class="stretch-actions">
+                  <button id="inspect-pairing" class="button" hidden>
+                    Inspect road pairing
+                  </button>
+                  <button id="add-stretch" class="button primary">
+                    Add to comparison</button
+                  ><button id="cancel-stretch-edit" class="text-button" hidden>
+                    Cancel edit
+                  </button>
+                </div>
+                <p id="stretch-status" role="status"></p>
               </div>
             </div>
-          </div>
-          <div class="stretch-action-row">
-            <div>
-              <strong id="selection-summary"></strong>
-              <p id="selection-context"></p>
-            </div>
-            <div class="stretch-actions">
-              <button id="inspect-pairing" class="button" hidden>
-                Inspect road pairing
-              </button>
-              <button id="add-stretch" class="button primary">
-                Add to comparison</button
-              ><button id="cancel-stretch-edit" class="text-button" hidden>
-                Cancel edit
-              </button>
-            </div>
-            <p id="stretch-status" role="status"></p>
           </div>
         </section>
         <div id="suggestions" class="panel"></div>
+<<<<<<< Updated upstream
         <section
           id="ride-story"
           class="panel"
@@ -478,6 +599,8 @@
             <p id="climb-status" role="status"></p>
           </fieldset>
         </section>
+=======
+>>>>>>> Stashed changes
         <section class="panel">
           <div class="section-title">
             <div>
