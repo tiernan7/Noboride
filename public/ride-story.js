@@ -24,7 +24,7 @@ export function createRideStory({
   let focused = "",
     rideId = "",
     context = 500,
-    full = false,
+    full = true,
     axis = "d",
     cursor = 0,
     current = null,
@@ -39,7 +39,7 @@ export function createRideStory({
     renderedWidth = 0;
   const LEFT = 64,
     RIGHT = 20,
-    ROW = 72;
+    ROW = 60;
   const imperial = () => state.settings.units === "imperial";
   const distance = (meters) =>
     `${(meters / (imperial() ? 1609.344 : 1000)).toFixed(2)} ${imperial() ? "mi" : "km"}`;
@@ -93,6 +93,15 @@ export function createRideStory({
       line.setAttribute("x1", x(cursor));
       line.setAttribute("x2", x(cursor));
     }
+    const overviewCursor = $("story-overview").querySelector(
+      "[data-overview-cursor]",
+    );
+    if (overviewCursor) {
+      overviewCursor.setAttribute("x1", x(cursor));
+      overviewCursor.setAttribute("x2", x(cursor));
+      $("overview-value").textContent =
+        `${height(p.ele)} · ${grades[cursor] == null ? "gradient unavailable" : `${grades[cursor].toFixed(1)}%`}`;
+    }
     for (const channel of channels()) {
       const output = $("story-charts").querySelector(
           `[data-story-value="${channel.key}"]`,
@@ -141,7 +150,7 @@ export function createRideStory({
     $("story-context").disabled = full;
     $("story-full").checked = full;
     $("story-axis").value = axis;
-    const metrics = channels(),
+    const metrics = channels().filter((channel) => channel.key !== "ele"),
       last = view.end,
       first = view.start;
     const paths = metrics
@@ -172,7 +181,11 @@ export function createRideStory({
           max -= min;
           min = 0;
         }
-        const y = (v) => row * ROW + 61 - ((v - min) / (max - min)) * 35;
+        if (channel.key === "grade") {
+          min = Math.min(0, min);
+          max = Math.max(0, max);
+        }
+        const y = (v) => row * ROW + 51 - ((v - min) / (max - min)) * 29;
         let d = "",
           connected = false;
         for (let i = first; i <= last; i++) {
@@ -189,15 +202,16 @@ export function createRideStory({
           d += `${connected ? "L" : "M"}${x(i).toFixed(2)},${y(channel.convert(v)).toFixed(2)}`;
           connected = true;
         }
-        return `<g data-story-lane="${channel.key}"><rect data-brush x="${x(state.start)}" y="${row * ROW + 20}" width="${Math.max(1, x(state.end) - x(state.start))}" height="45" fill="#edf5ff"/><text x="${LEFT}" y="${row * ROW + 13}">${channel.name}</text><text data-story-value="${channel.key}" x="${W - RIGHT}" y="${row * ROW + 13}" text-anchor="end"></text><text x="${LEFT - 8}" y="${row * ROW + 30}" text-anchor="end">${max.toFixed(0)}</text><text x="${LEFT - 8}" y="${row * ROW + 62}" text-anchor="end">${min.toFixed(0)}</text><path d="${d}" fill="none" stroke="${["#617a51", "#bb8242", "#287bd5", "#ca5864", "#8064b8", "#159982"][row]}" stroke-width="1.7"/>${!values.length ? `<text x="${W / 2}" y="${row * ROW + 48}">Not recorded</text>` : ""}</g>`;
+        return `<g data-story-lane="${channel.key}"><rect data-brush x="${x(state.start)}" y="${row * ROW + 20}" width="${Math.max(1, x(state.end) - x(state.start))}" height="34" fill="#edf5ff"/><text x="${LEFT}" y="${row * ROW + 13}">${channel.name}</text><text data-story-value="${channel.key}" x="${W - RIGHT}" y="${row * ROW + 13}" text-anchor="end"></text><text x="${LEFT - 8}" y="${row * ROW + 30}" text-anchor="end">${max.toFixed(0)}</text><text x="${LEFT - 8}" y="${row * ROW + 52}" text-anchor="end">${min.toFixed(0)}</text>${channel.key === "grade" ? `<line data-grade-zero x1="${LEFT}" x2="${W - RIGHT}" y1="${y(0)}" y2="${y(0)}" stroke="#7c8c9e" stroke-opacity="0.35" stroke-dasharray="3 4"/>` : ""}<path d="${d}" fill="none" stroke="${{ grade: "#bb8242", speed: "#287bd5", hr: "#ca5864", cad: "#8064b8", power: "#159982" }[channel.key]}" stroke-width="1.7"/>${!values.length ? `<text x="${W / 2}" y="${row * ROW + 48}">Not recorded</text>` : ""}</g>`;
       })
       .join("");
     const axisLabel = (i) =>
       axis === "d"
         ? distance(current.points[i].d - current.points[0].d)
         : clock(current.points[i].t - current.points[0].t);
+    renderOverview(first, last, axisLabel);
     $("story-charts").innerHTML =
-      `<svg class="story-traces" viewBox="0 0 ${W} ${metrics.length * ROW + 23}" role="img" aria-label="Linked elevation, gradient and sensor traces. Drag to select a range; hover or use the shared cursor to inspect.">${paths}${[state.start, state.end].map((i, j) => `<line data-boundary="${j ? "end" : "start"}" x1="${x(i)}" x2="${x(i)}" y1="18" y2="${metrics.length * ROW}" stroke="${j ? "#d2764b" : "#287bd5"}" stroke-dasharray="4 3"/>`).join("")}<line data-story-cursor y1="0" y2="${metrics.length * ROW}" stroke="#20334a" stroke-dasharray="3 3"/>${[first, Math.round((first + last) / 2), last].map((i) => `<text x="${x(i)}" y="${metrics.length * ROW + 15}" text-anchor="middle">${axisLabel(i)}</text>`).join("")}</svg>`;
+      `<svg class="story-traces" viewBox="0 0 ${W} ${metrics.length * ROW + 23}" role="img" aria-label="Linked elevation, gradient and sensor traces. Drag to select a range; Hover, tap or use arrow keys to inspect.">${paths}${[state.start, state.end].map((i, j) => `<line data-boundary="${j ? "end" : "start"}" x1="${x(i)}" x2="${x(i)}" y1="18" y2="${metrics.length * ROW}" stroke="${j ? "#d2764b" : "#287bd5"}" stroke-dasharray="4 3"/>`).join("")}<line data-story-cursor y1="0" y2="${metrics.length * ROW}" stroke="#20334a" stroke-dasharray="3 3"/>${[first, Math.round((first + last) / 2), last].map((i) => `<text x="${x(i)}" y="${metrics.length * ROW + 15}" text-anchor="middle">${axisLabel(i)}</text>`).join("")}</svg>`;
     const allSaved = savedRanges();
     const saved = allSaved.filter(
       (entry) => entry.end >= first && entry.start <= last,
@@ -223,8 +237,8 @@ export function createRideStory({
       );
     }
     const svg = $("story-charts").querySelector("svg");
-    const locate = (clientX) => {
-      const box = svg.getBoundingClientRect(),
+    const locate = (clientX, element = svg) => {
+      const box = element.getBoundingClientRect(),
         fraction = Math.max(
           0,
           Math.min(
@@ -245,6 +259,22 @@ export function createRideStory({
       }
       return lo;
     };
+    svg.setAttribute("tabindex", "0");
+    svg.onkeydown = (event) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key))
+        return;
+      event.preventDefault();
+      moveCursor(
+        event.key === "Home"
+          ? first
+          : event.key === "End"
+            ? last
+            : cursor + (event.key === "ArrowLeft" ? -1 : 1),
+      );
+    };
+    const overview = $("story-overview").querySelector("svg");
+    overview.onpointermove = (event) =>
+      moveCursor(locate(event.clientX, overview));
     let drag = null;
     svg.onpointerdown = (event) => {
       if (event.button !== 0 || !event.isPrimary) return;
@@ -349,6 +379,51 @@ export function createRideStory({
     $("story-surroundings").textContent =
       `Approach shown: ${distance(before)} with ${height(recentGain)} of recorded positive elevation changes. Aftermath shown: ${distance(after)}. ${interruptions} recording interruptions in the approach. Elevation noise affects accumulated gain; gaps stay visible. Gradient uses the selected physical window. Imported speed may be derived from distance/time; missing HR, cadence or power is never filled. Missing optional sensor lanes are omitted.`;
   }
+  function renderOverview(first, last, axisLabel) {
+    const elevations = current.points
+      .slice(first, last + 1)
+      .map((p) => p.ele)
+      .filter((v) => v != null);
+    let min = elevations.reduce((a, b) => Math.min(a, b), Infinity),
+      max = elevations.reduce((a, b) => Math.max(a, b), -Infinity);
+    if (!elevations.length) {
+      min = 0;
+      max = 1;
+    }
+    const span = Math.max(1, max - min),
+      low = min - span * 0.08,
+      high = max + span * 0.04;
+    const bottom = 105,
+      top = 15,
+      y = (v) => bottom - ((v - low) / (high - low)) * (bottom - top);
+    const gradeColor = (g) =>
+      g == null
+        ? "#c4ccd5"
+        : g >= 12
+          ? "#a676b8"
+          : g >= 9
+            ? "#d86d64"
+            : g >= 6
+              ? "#e5a16c"
+              : g >= 3
+                ? "#d0c478"
+                : "#a9c4b8";
+    let areas = "";
+    for (let i = first; i < last; i++) {
+      const a = current.points[i],
+        b = current.points[i + 1];
+      if (
+        a.ele == null ||
+        b.ele == null ||
+        b.breakBefore ||
+        b.t - a.t > state.settings.gapSeconds * 1000
+      )
+        continue;
+      areas += `<path data-grade-band="${grades[i] == null ? "unknown" : grades[i] >= 12 ? "12" : grades[i] >= 9 ? "9" : grades[i] >= 6 ? "6" : grades[i] >= 3 ? "3" : "gentle"}" d="M${x(i)},${bottom} L${x(i)},${y(a.ele)} L${x(i + 1)},${y(b.ele)} L${x(i + 1)},${bottom} Z" fill="${gradeColor(grades[i])}" opacity="${i >= state.start && i < state.end ? 1 : 0.45}"/>`;
+    }
+    $("story-overview").innerHTML =
+      `<div class="overview-heading"><span>Elevation · gradient colours</span><span id="overview-value"></span></div><svg viewBox="0 0 ${W} 135" role="img" aria-label="Elevation filled by gradient over ${state.settings.gradeWindow} metres; follows the linked range and cursor">${[min, (min + max) / 2, max].map((v) => `<line x1="${LEFT}" x2="${W - RIGHT}" y1="${y(v)}" y2="${y(v)}" stroke="#e3e9ef"/><text x="${LEFT - 8}" y="${y(v) + 4}" text-anchor="end">${Math.round(v * (imperial() ? 3.28084 : 1))}</text>`).join("")}<rect data-brush x="${x(state.start)}" y="${top}" width="${Math.max(1, x(state.end) - x(state.start))}" height="${bottom - top}" fill="#edf5ff"/>${areas}${[state.start, state.end].map((i, j) => `<line data-overview-boundary="${j ? "end" : "start"}" x1="${x(i)}" x2="${x(i)}" y1="${top}" y2="${bottom}" stroke="${j ? "#d2764b" : "#287bd5"}" stroke-dasharray="4 3"/>`).join("")}<line data-overview-cursor y1="${top}" y2="${bottom}" stroke="#20334a" stroke-dasharray="3 3"/>${[first, Math.round((first + last) / 2), last].map((i) => `<text x="${x(i)}" y="126" text-anchor="middle">${axisLabel(i)}</text>`).join("")}${!elevations.length ? `<text x="${W / 2}" y="65" text-anchor="middle">Elevation not recorded</text>` : ""}</svg><div class="overview-legend"><span><i style="background:#a9c4b8"></i>&lt;3% / descent</span><span><i style="background:#d0c478"></i>3–6%</span><span><i style="background:#e5a16c"></i>6–9%</span><span><i style="background:#d86d64"></i>9–12%</span><span><i style="background:#a676b8"></i>≥12%</span><span><i style="background:#c4ccd5"></i>Unknown</span><span>${imperial() ? "ft" : "m"} · ${state.settings.gradeWindow} m grade window</span></div>`;
+  }
   $("story-context").onchange = (event) => {
     context = +event.target.value;
     render();
@@ -381,14 +456,10 @@ export function createRideStory({
       manualDraft = null;
       focused = node.id;
       draftName = node.name;
-<<<<<<< Updated upstream
-      full = false;
-=======
       draftKind = node.kind;
       onChooseSection({ ...node, rideId: current.id });
       $("climb-error").textContent = "";
       $("climb-status").textContent = "";
->>>>>>> Stashed changes
       cursor = node.start;
       const included = members({ ...node, rideId: current.id });
       onRange(
@@ -472,9 +543,14 @@ export function createRideStory({
       options[key] = +event.target.value;
       render();
     };
-  new ResizeObserver((entries) => {
-    const width = entries[0]?.contentRect.width || 0;
-    if (current && width > 0 && Math.abs(width - renderedWidth) > 1) render();
+  let resizeFrame = 0;
+  new ResizeObserver(() => {
+    if (resizeFrame) return;
+    resizeFrame = requestAnimationFrame(() => {
+      resizeFrame = 0;
+      const width = $("story-charts").clientWidth;
+      if (current && width > 0 && Math.abs(width - renderedWidth) > 1) render();
+    });
   }).observe($("story-charts"));
   function clearSelection() {
     focused = "";

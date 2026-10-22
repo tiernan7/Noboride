@@ -14,6 +14,8 @@ import {
 } from "/analysis.mjs";
 import { createComparisonWorkspace } from "/workspace.js";
 import { createRideStory } from "/ride-story.js";
+import { createHillLibrary } from "/hills.js";
+import { effortTrace, sectionCandidates } from "/comparisons.mjs";
 const $ = (id) => document.getElementById(id),
   esc = (v) =>
     String(v ?? "").replace(
@@ -49,6 +51,7 @@ const loaded = new Map(),
   pending = new Map();
 let comparisonWorkspace,
   rideStory,
+  hillLibrary,
   rideRename = null;
 let settingsTimeout;
 const ref = () => loaded.get(state.referenceId),
@@ -172,6 +175,9 @@ async function refresh(initial = false) {
     state.selected = state.rides.slice(0, 3).map((r) => r.id);
   await Promise.all(state.selected.map(getRide));
   await comparisonWorkspace.load(v.comparisons, initial);
+  hillLibrary?.invalidate();
+  // Hill discovery is metadata only in the browser; raw tracks remain on demand.
+  await hillLibrary?.load();
   persistSelection();
   render();
 }
@@ -192,10 +198,12 @@ function compute() {
     state.matches.map((m) => [m.id, summarize(m.points, state.settings)]),
   );
   state.budgets = new Map(
-    state.matches.map((m) => [
-      m.id,
-      terrainBudget(m.points, state.canonical, state.settings),
-    ]),
+    comparisonWorkspace.active()?.mode === "terrain"
+      ? []
+      : state.matches.map((m) => [
+          m.id,
+          terrainBudget(m.points, state.canonical, state.settings),
+        ]),
   );
   const savedEntries = comparisonWorkspace.active()?.entries || [];
   if (!savedEntries.some((entry) => entry.id === state.baseline))
@@ -245,6 +253,49 @@ function render() {
   renderBudget();
   renderContext();
   rideStory?.render();
+  renderHillGuidance();
+  hillLibrary?.render();
+}
+async function showView(view) {
+  $("comparisons-view").hidden = view !== "comparisons";
+  $("hills-view").hidden = view !== "hills";
+  $("comparisons-tab").setAttribute(
+    "aria-pressed",
+    String(view === "comparisons"),
+  );
+  $("hills-tab").setAttribute("aria-pressed", String(view === "hills"));
+  if (view === "hills") await hillLibrary.open();
+  else render();
+}
+function renderHillGuidance() {
+  const data = hillLibrary?.data(),
+    ride = ref(),
+    container = $("hill-guidance");
+  container.hidden = true;
+  if (!data || !ride || !data.library.groups.length) return;
+  const observation = sectionCandidates(
+    { rideId: ride.id, start: state.start, end: state.end },
+    data.observations.filter((o) =>
+      data.library.groups.some((g) => g.observationIds.includes(o.id)),
+    ),
+    ride.points,
+    60,
+  )[0]?.candidate;
+  const group =
+    observation &&
+    data.library.groups.find((g) => g.observationIds.includes(observation.id));
+  if (!group) return;
+  const entries = comparisonWorkspace.active()?.entries || [],
+    others = data.observations.filter((o) => {
+      if (!group.observationIds.includes(o.id)) return false;
+      return !entries.some((entry) => {
+        if (entry.hillObservationId === o.id) return true;
+        const points = loaded.get(o.rideId)?.points;
+        return points && sectionCandidates(o, [entry], points, 60).length > 0;
+      });
+    });
+  container.hidden = false;
+  container.innerHTML = `<span>Hill: <strong>${esc(group.name)}</strong></span> <button class="text-button" data-open-hills="${esc(group.id)}">View summary</button>${others.length ? `<details><summary>${others.length} library pass${others.length === 1 ? "" : "es"} not in this comparison</summary><div class="hill-actions">${others.map((o) => `<button class="button small" data-hill-preview="${esc(o.id)}">Preview ${esc(rideName(o.rideId))} · ${fmtTime(o.positionSeconds)}</button>`).join("")}</div></details>` : "<small>All library passes are included.</small>"}`;
 }
 function renderRides() {
   $("ride-count").textContent = state.rides.length;
@@ -310,6 +361,7 @@ function renderSummary() {
   }
   const b = baseline(),
     c = comparison(),
+    terrain = comparisonWorkspace.active()?.mode === "terrain",
     s = summarize(b?.points || state.canonical, state.settings),
     gain =
       b && c
@@ -338,19 +390,25 @@ function renderSummary() {
         : `Peak ${num(s.maxGrade, 1)}% over ${state.settings.gradeWindow} m`,
     ],
     [
-      "Selected comparison",
-      gain == null ? "—" : fmtTime(Math.abs(gain)),
+      terrain ? "Elapsed difference" : "Selected comparison",
       gain == null
-        ? "Include another matching ride"
-        : gain >= 0
-          ? "Faster than the baseline"
-          : "Slower than the baseline",
+        ? "—"
+        : terrain
+          ? fmtTime(-gain, true)
+          : fmtTime(Math.abs(gain)),
+      terrain
+        ? "Selected effort vs baseline · independent boundaries"
+        : gain == null
+          ? "Include another matching ride"
+          : gain >= 0
+            ? "Faster than the baseline"
+            : "Slower than the baseline",
     ],
   ];
   $("summary").innerHTML = cards
     .map(
       ([label, value, sub], i) =>
-        `<div class="summary-card ${i === 3 && gain > 0 ? "gain-card" : ""}"><span>${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(sub)}</small></div>`,
+        `<div class="summary-card ${i === 3 && !terrain && gain > 0 ? "gain-card" : ""}"><span>${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(sub)}</small></div>`,
     )
     .join("");
 }
@@ -410,9 +468,20 @@ class RouteMap {
     this.key = "";
     this.bounds = null;
     this.onSelect = onSelect;
+    let resizeFrame = 0,
+      lastSize = "";
     new ResizeObserver(() => {
-      this.map.invalidateSize();
-      this.fit();
+      if (resizeFrame) return;
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = 0;
+        const element = $(id),
+          size = `${element.clientWidth}:${element.clientHeight}`;
+        if (!element.clientWidth || !element.clientHeight || size === lastSize)
+          return;
+        lastSize = size;
+        this.map.invalidateSize();
+        this.fit();
+      });
     }).observe($(id));
   }
   update(rides, matches, reference, start, end) {
@@ -533,7 +602,11 @@ const mainMap = new RouteMap("map", (ll, type) => {
 });
 const CH = { w: 780, h: 218, l: 48, r: 16, t: 20, b: 32 };
 function renderMatches() {
-  const b = baseline();
+  const b = baseline(),
+    terrain = comparisonWorkspace.active()?.mode === "terrain";
+  $("baseline-description").textContent = terrain
+    ? "Negative Δ elapsed means a shorter elapsed time than the chosen baseline. Different hills retain independent lengths and boundaries; this is not a same-road time advantage."
+    : "Negative Δ means faster. GPS offsets show start / end miss distance.";
   const savedBaseline = comparisonWorkspace
     .active()
     ?.entries.find((entry) => entry.id === state.baseline);
@@ -561,12 +634,12 @@ function renderMatches() {
   $("include-baseline-ride").hidden = !excludedBaseline;
   $("export").disabled = !state.matches.length;
   $("matches").innerHTML = state.matches.length
-    ? `<table><thead><tr><th>Ride / pass</th><th>Elapsed</th><th>Δ baseline</th><th>Moving est.</th><th>Avg speed</th><th>Avg HR</th><th>Cadence</th><th>GPS offsets</th><th></th></tr></thead><tbody>${state.matches
+    ? `<table><thead><tr><th>Ride / pass</th><th>Elapsed</th><th>${terrain ? "Δ elapsed" : "Δ baseline"}</th><th>Moving est.</th><th>Avg speed</th><th>Avg HR</th><th>Cadence</th><th>${terrain ? "Peak grade" : "GPS offsets"}</th><th></th></tr></thead><tbody>${state.matches
         .map((m) => {
           const s = state.stats.get(m.id),
             base = m.id === b?.id,
             delta = b ? s.elapsed - state.stats.get(b.id).elapsed : null;
-          return `<tr class="${base ? "baseline" : ""}"><td><strong class="table-ride"><i style="background:${color(m.rideId)}"></i>${esc(rideName(m.rideId))}</strong><small>Pass ${m.pass} · ${dist(s.distance)}${m.manual ? " · manual" : ""}${base ? " · baseline" : ""}</small></td><td class="strong">${fmtTime(s.elapsed)}</td><td class="${delta < 0 ? "positive" : ""}">${!b || base ? "—" : fmtTime(delta, true)}</td><td>${fmtTime(s.moving)}</td><td>${spd(s.speed)} <small>${spdUnit()}</small></td><td>${num(s.hr)} <small>bpm</small></td><td>${num(s.cadence)} <small>rpm</small></td><td title="${m.manual ? "Manual selection: automatic road checks bypassed" : `Max ordered-route offset: ${num(m.routeError, 1)}m${m.gpsBridgeSeconds ? `; GPS gap bridged for geometry checks: ${num(m.gpsBridgeSeconds)} seconds` : ""}`}">${m.manual ? "Manual" : `${Math.round(m.startMiss)} / ${Math.round(m.endMiss)} m`}${!m.manual && m.gpsBridgeSeconds ? `<small>GPS gap: ${num(m.gpsBridgeSeconds)} s</small>` : ""}</td><td><button class="text-button" data-entry-edit="${esc(m.id)}">Edit</button></td></tr>`;
+          return `<tr class="${base ? "baseline" : ""}"><td><strong class="table-ride"><i style="background:${color(m.rideId)}"></i>${esc(rideName(m.rideId))}</strong><small>Pass ${m.pass} · ${dist(s.distance)}${m.manual ? " · manual" : ""}${base ? " · baseline" : ""}</small></td><td class="strong">${fmtTime(s.elapsed)}</td><td class="${b && !base && delta < 0 ? "positive" : ""}">${!b || base ? "—" : fmtTime(delta, true)}${terrain ? `<small>${elev(s.grade == null ? null : (s.grade * s.distance) / 100)} gain · ${num(s.grade, 1)}%</small>` : ""}</td><td>${fmtTime(s.moving)}</td><td>${spd(s.speed)} <small>${spdUnit()}</small></td><td>${num(s.hr)} <small>bpm</small></td><td>${num(s.cadence)} <small>rpm</small></td><td title="${terrain ? "Independent terrain effort" : m.manual ? "Manual selection: automatic road checks bypassed" : `Max ordered-route offset: ${num(m.routeError, 1)}m${m.gpsBridgeSeconds ? `; GPS gap bridged for geometry checks: ${num(m.gpsBridgeSeconds)} seconds` : ""}`}">${terrain ? `${num(s.maxGrade, 1)}% over ${state.settings.gradeWindow} m` : m.manual ? "Manual" : `${Math.round(m.startMiss)} / ${Math.round(m.endMiss)} m`}${!m.manual && m.gpsBridgeSeconds ? `<small>GPS gap: ${num(m.gpsBridgeSeconds)} s</small>` : ""}</td><td><button class="text-button" data-entry-edit="${esc(m.id)}">Edit</button></td></tr>`;
         })
         .join("")}</tbody></table>`
     : comparisonWorkspace.active()?.entries.length
@@ -577,8 +650,19 @@ function renderMatches() {
   $("unmatched").innerHTML = "";
 }
 function renderComparison() {
+  const terrain = comparisonWorkspace.active()?.mode === "terrain";
+  if (terrain && state.metric === "delta") state.metric = "ele";
   const metric = state.metric,
     b = baseline();
+  $("metric").querySelector('[value="delta"]').disabled = terrain;
+  $("metric").querySelector('[value="delta"]').hidden = terrain;
+  $("effort-axis-control").hidden = !terrain;
+  $("comparison-chart-title").textContent = terrain
+    ? "Effort traces on independent hills"
+    : "Selected stretches, aligned by progress";
+  $("comparison-chart-help").textContent = terrain
+    ? "Original recorded samples share an axis. Relative progress describes effort shape, without geographic correspondence."
+    : "Hover to locate the corresponding point on the map.";
   $("metric").value = metric;
   $("metric").disabled = !b;
   state.chartData = [];
@@ -589,6 +673,7 @@ function renderComparison() {
     $("legend").innerHTML = "";
     return;
   }
+  if (terrain) return renderTerrainComparison(b, metric);
   const units =
     metric === "speed"
       ? spdUnit()
@@ -704,6 +789,163 @@ function renderComparison() {
   svg.onpointerleave = () => {
     $("compare-cursor").setAttribute("opacity", "0");
     legend(null);
+    mainMap.highlight(null);
+  };
+}
+function renderTerrainComparison(b, metric) {
+  const axis = comparisonWorkspace.active().axis || "progress";
+  $("effort-axis").value = axis;
+  const units =
+    metric === "speed"
+      ? spdUnit()
+      : metric === "ele"
+        ? unit() === "imperial"
+          ? "ft"
+          : "m"
+        : metric === "hr"
+          ? "bpm"
+          : metric === "cad"
+            ? "rpm"
+            : metric === "power"
+              ? "W"
+              : "%";
+  const axisLabel =
+    axis === "progress"
+      ? "Relative distance (%) · independent hill lengths"
+      : axis === "elapsed"
+        ? "Elapsed time from section start"
+        : axis === "distance"
+          ? "Distance from section start"
+          : "Accumulated positive elevation changes · raw, noise sensitive";
+  const xValue = (x) =>
+    axis === "distance"
+      ? x / (unit() === "imperial" ? 1609.344 : 1000)
+      : axis === "ascent"
+        ? x * (unit() === "imperial" ? 3.28084 : 1)
+        : x;
+  const lines = state.matches.map((m) => {
+    const grades =
+      metric === "grade"
+        ? gradeProfile(
+            m.points,
+            state.settings.gradeWindow,
+            state.settings.gapSeconds,
+          )
+        : null;
+    return {
+      m,
+      values: effortTrace(m.points, axis, state.settings.gapSeconds).map(
+        (sample) => {
+          let y = grades ? grades[sample.index] : sample.point[metric];
+          if (metric === "ele")
+            y =
+              y != null && m.points[0].ele != null
+                ? (y - m.points[0].ele) * (unit() === "imperial" ? 3.28084 : 1)
+                : null;
+          if (metric === "speed" && y != null)
+            y *= unit() === "imperial" ? 2.236936 : 3.6;
+          return {
+            ...sample,
+            x: sample.x == null ? null : xValue(sample.x),
+            y,
+          };
+        },
+      ),
+    };
+  });
+  const values = lines.flatMap((l) =>
+    l.values.filter((v) => v.x != null && v.y != null),
+  );
+  const xMax = values.reduce(
+    (max, value) => Math.max(max, value.x),
+    axis === "progress" ? 1 : 0.001,
+  );
+  let lo = 0,
+    hi = 1;
+  for (const value of values) {
+    lo = Math.min(lo, value.y);
+    hi = Math.max(hi, value.y);
+  }
+  const pad = Math.max(1, (hi - lo) * 0.08);
+  lo -= pad;
+  hi += pad;
+  const x = (v) => CH.l + (v / xMax) * (CH.w - CH.l - CH.r),
+    y = (v) => CH.h - CH.b - ((v - lo) / (hi - lo)) * (CH.h - CH.b - CH.t);
+  const path = (series) => {
+    let down = false;
+    return series
+      .map((v) => {
+        if (v.x == null || v.y == null) {
+          down = false;
+          return "";
+        }
+        const segment = `${down && v.connected ? "L" : "M"}${x(v.x)},${y(v.y)}`;
+        down = true;
+        return segment;
+      })
+      .join(" ");
+  };
+  const xLabel = (v) =>
+    axis === "progress"
+      ? `${Math.round(v * 100)}%`
+      : axis === "elapsed"
+        ? fmtTime(v)
+        : `${v.toFixed(axis === "distance" ? 2 : 0)} ${axis === "distance" ? (unit() === "imperial" ? "mi" : "km") : unit() === "imperial" ? "ft" : "m"}`;
+  $("comparison-chart").innerHTML =
+    `<svg viewBox="0 0 ${CH.w} ${CH.h}" role="img" aria-label="${esc(metric)} across different hills by ${esc(axisLabel)}">${[0, 0.5, 1].map((f) => `<line x1="${CH.l}" x2="${CH.w - CH.r}" y1="${y(lo + (hi - lo) * f)}" y2="${y(lo + (hi - lo) * f)}" stroke="#e4e9ee"/><text x="${CH.l - 8}" y="${y(lo + (hi - lo) * f) + 4}" text-anchor="end">${num(lo + (hi - lo) * f)}</text>`).join("")}${lines.map(({ m, values }) => `<path d="${path(values)}" fill="none" stroke="${color(m.rideId)}" stroke-width="${m.id === b.id ? 3 : 2.2}" ${m.pass > 1 ? 'stroke-dasharray="6 3"' : ""}/>`).join("")}${[0, 0.25, 0.5, 0.75, 1].map((f) => `<text x="${x(f * xMax)}" y="${CH.h - 8}" text-anchor="middle">${esc(xLabel(f * xMax))}</text>`).join("")}<line id="compare-cursor" y1="${CH.t}" y2="${CH.h - CH.b}" stroke="#172b42" opacity="0"/></svg><div class="chart-caption"><span>${esc(units)}</span><span>${esc(axisLabel)}</span></div>${!values.length ? '<p class="no-channel">This channel or axis is unavailable.</p>' : ""}${axis === "ascent" ? '<p class="data-note">Raw ascent is noise sensitive. A trace stops at the first missing elevation or recording gap; no climb is invented across missing data.</p>' : ""}`;
+  state.chartData = lines;
+  const legend = (value = null) => {
+    $("legend").innerHTML = lines
+      .map(({ m, values }) => {
+        const sample =
+          value == null
+            ? null
+            : values
+                .filter((v) => v.x != null)
+                .reduce(
+                  (best, v) =>
+                    !best || Math.abs(v.x - value) < Math.abs(best.x - value)
+                      ? v
+                      : best,
+                  null,
+                );
+        return `<span><i style="background:${color(m.rideId)}"></i>${esc(rideName(m.rideId))} · pass ${m.pass}${sample ? ` · ${num(sample.y, 1)} ${esc(units)}` : ""}</span>`;
+      })
+      .join("");
+  };
+  legend();
+  const svg = $("comparison-chart").querySelector("svg");
+  svg.onpointermove = (event) => {
+    const box = svg.getBoundingClientRect(),
+      f = Math.max(
+        0,
+        Math.min(
+          1,
+          (((event.clientX - box.left) / box.width) * CH.w - CH.l) /
+            (CH.w - CH.l - CH.r),
+        ),
+      ),
+      value = f * xMax,
+      cursor = $("compare-cursor");
+    cursor.setAttribute("x1", x(value));
+    cursor.setAttribute("x2", x(value));
+    cursor.setAttribute("opacity", ".5");
+    legend(value);
+    const source = lines.find((l) => l.m.rideId === state.referenceId),
+      sample = source?.values
+        .filter((v) => v.x != null)
+        .reduce(
+          (best, v) =>
+            !best || Math.abs(v.x - value) < Math.abs(best.x - value)
+              ? v
+              : best,
+          null,
+        );
+    mainMap.highlight(sample?.point || null);
+  };
+  svg.onpointerleave = () => {
+    $("compare-cursor").setAttribute("opacity", "0");
+    legend();
     mainMap.highlight(null);
   };
 }
@@ -842,6 +1084,10 @@ function exportCSV() {
     "source_end_index",
     "road_relationship",
     "road_review",
+    "comparison_mode",
+    "effort_axis",
+    "hill_observation_id",
+    "hill_group_id",
   ];
   const rows = state.matches.map((m) => {
     const r = loaded.get(m.rideId),
@@ -883,6 +1129,12 @@ function exportCSV() {
       m.endIndex,
       m.relation,
       m.review,
+      comparisonWorkspace.active().mode || "same-road",
+      comparisonWorkspace.active().axis || "progress",
+      comparisonWorkspace.active().entries.find((e) => e.id === m.id)
+        ?.hillObservationId || "",
+      comparisonWorkspace.active().entries.find((e) => e.id === m.id)
+        ?.hillGroupId || "",
     ]
       .map(csv)
       .join(",");
@@ -1064,6 +1316,30 @@ $("metric").onchange = (e) => {
   renderComparison();
   comparisonWorkspace.soon();
 };
+$("effort-axis").onchange = (event) => {
+  comparisonWorkspace.active().axis = event.target.value;
+  renderComparison();
+  comparisonWorkspace.soon();
+};
+$("comparisons-tab").onclick = () => showView("comparisons");
+$("hills-tab").onclick = () => showView("hills");
+$("hill-guidance").onclick = async (event) => {
+  const summaryButton = event.target.closest("[data-open-hills]");
+  if (summaryButton) {
+    await showView("hills");
+    await hillLibrary.showSummary(summaryButton.dataset.openHills);
+  }
+  const button = event.target.closest("[data-hill-preview]");
+  if (button) {
+    const observation = hillLibrary
+      .data()
+      ?.observations.find((o) => o.id === button.dataset.hillPreview);
+    if (observation)
+      task("Previewing a reviewed hill pass…", () =>
+        comparisonWorkspace.previewHill(observation),
+      );
+  }
+};
 $("export").onclick = exportCSV;
 window.addEventListener("click", (e) => {
   const rename = e.target.closest("[data-ride-rename]");
@@ -1215,6 +1491,36 @@ rideStory = createRideStory({
       start,
       end,
     );
+  },
+});
+hillLibrary = createHillLibrary({
+  state,
+  getRide,
+  api,
+  json,
+  esc,
+  rideName,
+  getComparison: () => comparisonWorkspace.active(),
+  onChange: () => renderHillGuidance(),
+  onCompare: async (observations, mode, name) => {
+    if (state.busy)
+      throw new Error(
+        "Wait for the current operation to finish, then try again.",
+      );
+    state.busy = true;
+    document.body.classList.add("working");
+    try {
+      await comparisonWorkspace.createFromHills(
+        observations,
+        mode,
+        name,
+        hillLibrary.data().library,
+      );
+      await showView("comparisons");
+    } finally {
+      state.busy = false;
+      document.body.classList.remove("working");
+    }
   },
 });
 task("Loading your local workspace…", () => refresh(true));

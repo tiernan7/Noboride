@@ -53,10 +53,12 @@ No SQL schema migration was required: these are optional JSON metadata fields in
 
 ## Subsequent roadmap
 
-The remaining seven requested areas are future work, not hidden completed features:
+The [Hills library](HILLS.md) now provides comparison-side hill creation with mandatory per-pass review, separately persisted hill boundaries, composite profiles with coverage and variation, and one-point-per-identity terrain exploration. Different hills compare inline within Hills; individual pass analysis opens in Comparisons. Automatic identity/terrain clustering and broader route filters remain future work.
 
-1. A library-wide hill explorer with explicit confirmed hill identities, bike/route filters and terrain-based grouping independent of performance.
-2. Effort-shape comparisons on distance, elapsed time and accumulated ascent. This first story view has distance/time for one source recording; accumulated-ascent comparison axes are not implemented.
+The remaining areas include:
+
+1. Further validate composite alignment and boundary consistency on diverse real recordings; add route filters and terrain grouping independent of performance.
+2. Extend effort-shape comparisons with simultaneous multi-channel overlays and context across differing hills. The initial independent effort axes are implemented; they do not establish equal physiological effort.
 3. Exploration of possible riding-mode groups with confounders and an explicit no-clear-separation result. User labels such as attack/easy must not be inferred from speed.
 4. Richer preceding-climbing and ahead-terrain context across repeated efforts, with alternative explanations instead of emotional interpretation.
 5. Point/section annotations and equipment history. Associate supplied corrections with exact activity IDs and times rather than guessing from filenames; retain explicit reference/comparison choices and never hard-code a date as universal baseline.

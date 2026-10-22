@@ -57,6 +57,8 @@ export function createComparisonWorkspace({
     baseline: "",
     comparison: "",
     metric: "ele",
+    mode: "same-road",
+    axis: "progress",
     settings: { ...state.settings },
   });
   const editorRange = () =>
@@ -143,6 +145,18 @@ export function createComparisonWorkspace({
     collection.activeId = id;
     const c = active();
     c.matchDecisions ||= [];
+    if (c.road && !c.roadEntryId) {
+      const source =
+        c.entries.find((entry) => entry.kind === "source") ||
+        c.entries.find(
+          (entry) =>
+            entry.rideId === c.road.rideId &&
+            entry.start === c.road.start &&
+            entry.end === c.road.end,
+        ) ||
+        c.entries[0];
+      if (source) c.roadEntryId = source.id;
+    }
     if (c.sections === undefined) {
       // One-time copies for pre-section workspaces; subsequent edits stay inside each comparison.
       const used = new Set([
@@ -197,7 +211,7 @@ export function createComparisonWorkspace({
   function matches() {
     const c = active(),
       canonical = roadPoints();
-    if (!c) return [];
+    if (!c || c.roadPending) return [];
     const counts = new Map();
     return c.entries.flatMap((entry) => {
       const ride = loaded.get(entry.rideId);
@@ -244,7 +258,7 @@ export function createComparisonWorkspace({
   function suggestions() {
     const points = roadPoints(),
       c = active();
-    if (!points || !c?.entries.length) return [];
+    if (!points || !c?.entries.length || c.mode === "terrain") return [];
     return state.selected.flatMap((id) => {
       const ride = loaded.get(id);
       return ride
@@ -496,11 +510,11 @@ export function createComparisonWorkspace({
       c.entries = c.entries.filter(
         (entry) => !members.some((member) => member.id === entry.id),
       );
+      afterRemoval(
+        c,
+        members.map((member) => member.id),
+      );
       putDefinition({ ...original, rideId: section.rideId, deleted: true });
-      if (!c.entries.length) {
-        c.road = null;
-        c.matchDecisions = [];
-      }
       editing = null;
       await save();
       onOpenRange?.();
@@ -517,6 +531,10 @@ export function createComparisonWorkspace({
     const c = active();
     if (!c) return;
     $("comparison-name").textContent = c.name || "Untitled comparison";
+    $("comparison-mode").textContent =
+      c.mode === "terrain"
+        ? "Different hills · independent terrain efforts"
+        : "Same road · inspect GPS correspondence";
     $("comparison-switch").innerHTML = collection.items
       .map(
         (x) =>
@@ -530,14 +548,20 @@ export function createComparisonWorkspace({
     $("comparison-count").textContent =
       `${state.matches.length} of ${c.entries.length} stretches available · ${new Set(state.matches.map((e) => e.rideId)).size} selected ride${new Set(state.matches.map((e) => e.rideId)).size === 1 ? "" : "s"}`;
     const coverage = availability(c);
-    $("comparison-availability").hidden = !c.entries.length;
-    $("comparison-availability-text").textContent = !coverage.selected.length
-      ? "No selected rides supply stretches for this comparison. Include its rides or switch to another comparison. Saved stretches are kept."
-      : coverage.missing.length
-        ? `Partial comparison: ${state.matches.length} of ${c.entries.length} stretches available. ${coverage.missing.length} saved stretches belong to unselected rides.`
-        : state.matches.length < c.entries.length
-          ? `${state.matches.length} of ${c.entries.length} stretches available. Some pairings are rejected or could not be verified under the current settings.`
-          : `Ready: all ${c.entries.length} saved stretches are available from selected rides.`;
+    $("comparison-availability").hidden =
+      !c.entries.length ||
+      (!c.roadPending &&
+        !coverage.missing.length &&
+        state.matches.length === c.entries.length);
+    $("comparison-availability-text").textContent = c.roadPending
+      ? "The previous comparison road was removed. Add a new stretch to define the road, or choose Use as comparison road on an existing stretch. Saved stretches are kept; analysis waits for that choice."
+      : !coverage.selected.length
+        ? "No selected rides supply stretches for this comparison. Include its rides or switch to another comparison. Saved stretches are kept."
+        : coverage.missing.length
+          ? `Partial comparison: ${state.matches.length} of ${c.entries.length} stretches available. ${coverage.missing.length} saved stretches belong to unselected rides.`
+          : state.matches.length < c.entries.length
+            ? `${state.matches.length} of ${c.entries.length} stretches available. Some pairings are rejected or could not be verified under the current settings.`
+            : `Ready: all ${c.entries.length} saved stretches are available from selected rides.`;
     $("include-missing-rides").hidden = !coverage.missing.length;
     $("excluded-stretches").hidden = !coverage.missing.length;
     $("excluded-stretches-summary").textContent =
@@ -630,7 +654,7 @@ export function createComparisonWorkspace({
       entries
         .map(
           (e) =>
-            `<li class="${editing?.id === e.id ? "editing-stretch" : ""}"><div><strong>${c.entries.findIndex((x) => x.id === e.id) + 1}. ${esc(rideName(e.rideId))}${e.sectionId ? ` · ${esc(c.sections?.find((section) => section.rideId === e.rideId && section.id === e.sectionId)?.name || "Section")}` : ""}</strong><small>${excluded ? "Ride not selected" : esc(rangeLabel(e))} · ${e.kind === "matched" ? "GPS matched" : e.kind === "source" ? "Selected road" : e.relation === "same-road" ? "Manually confirmed same road" : "Similar terrain · manually paired effort"}${e.review === "rejected" ? " · rejected: not analysed" : e.review === "confirmed" ? " · confirmed" : ""}${excluded || e.review === "rejected" || state.matches.some((m) => m.id === e.id) ? "" : " · unavailable under current matching settings"}</small></div>${excluded ? `<button class="text-button" data-include-saved-ride="${esc(e.rideId)}">Include ride</button>` : `<button class="text-button" data-entry-edit="${esc(e.id)}">Edit</button>${e.kind !== "source" ? `<button class="text-button" data-entry-review="${esc(e.id)}">Review road</button>` : ""}`}<button class="text-button danger" data-entry-remove="${esc(e.id)}">Remove</button></li>`,
+            `<li class="${editing?.id === e.id ? "editing-stretch" : ""}"><div><strong>${c.entries.findIndex((x) => x.id === e.id) + 1}. ${esc(rideName(e.rideId))}${e.sectionId ? ` · ${esc(c.sections?.find((section) => section.rideId === e.rideId && section.id === e.sectionId)?.name || "Section")}` : ""}</strong><small>${excluded ? "Ride not selected" : esc(rangeLabel(e))} · ${e.kind === "matched" ? "GPS matched" : e.kind === "source" ? "Selected road" : e.relation === "same-road" ? "Manually confirmed same road" : "Similar terrain · manually paired effort"}${e.review === "rejected" ? " · rejected: not analysed" : e.review === "confirmed" ? " · confirmed" : ""}${excluded || e.review === "rejected" || state.matches.some((m) => m.id === e.id) ? "" : " · unavailable under current matching settings"}</small></div>${excluded ? `<button class="text-button" data-include-saved-ride="${esc(e.rideId)}">Include ride</button>` : `<button class="text-button" data-entry-edit="${esc(e.id)}">Edit</button>${c.mode !== "terrain" && (e.id !== c.roadEntryId || !c.road || e.start !== c.road.start || e.end !== c.road.end) ? `<button class="text-button" data-entry-road="${esc(e.id)}">Use as comparison road</button>` : ""}${c.mode !== "terrain" && c.road && e.kind !== "source" ? `<button class="text-button" data-entry-review="${esc(e.id)}">Review road</button>` : ""}`}<button class="text-button danger" data-entry-remove="${esc(e.id)}">Remove</button></li>`,
         )
         .join("");
     $("comparison-entries").innerHTML = c.entries.length
@@ -640,9 +664,13 @@ export function createComparisonWorkspace({
     const suggested = suggestions();
     $("suggestions").innerHTML = suggested.length
       ? `<h3>Suggested matching stretches</h3><p>GPS proposals need your judgement, especially on nearby parallel roads. Inspect original tracks and direction before confirming the same road. Suggestions are not part of the comparison yet.</p>${suggested.map((m, i) => `<div class="suggestion"><span>${esc(rideName(m.rideId))} · pass ${m.pass}<small>GPS offsets ${m.startMiss.toFixed(0)} / ${m.endMiss.toFixed(0)} m · route offset ${m.routeError.toFixed(0)} m${m.gpsBridgeSeconds ? ` · GPS bridge ${m.gpsBridgeSeconds}s` : ""}</small></span><button class="text-button" data-suggestion-view="${i}">Preview</button><button class="text-button" data-suggestion-review="${i}">Inspect roads</button><button class="button small" data-suggestion-add="${i}">Add match</button></div>`).join("")}`
-      : c.entries.length
-        ? '<p class="subtle">No further verified matches among the loaded rides. Select another stretch on any ride tab to add an effort manually.</p>'
-        : "";
+      : c.roadPending
+        ? '<p class="subtle">Choose the comparison road to see matching suggestions.</p>'
+        : c.mode === "terrain"
+          ? '<p class="subtle">Choose additional source ranges or explore different hills in the Hills tab. Each effort retains its own terrain.</p>'
+          : c.entries.length
+            ? '<p class="subtle">No further verified matches among the loaded rides. Select another stretch on any ride tab to add an effort manually.</p>'
+            : "";
     const rejected = c.matchDecisions || [];
     if (rejected.length)
       $("suggestions").insertAdjacentHTML(
@@ -654,6 +682,12 @@ export function createComparisonWorkspace({
         ? "Similar-terrain efforts: these may be different roads. Distance-progress overlays do not establish equal effort or geographic correspondence. Same-road terrain attribution is disabled."
         : "Manually confirmed same road: original source boundaries remain independent and automatic road checks are overridden. Progress alignment is approximate; same-road terrain attribution is disabled for manual corrections."
       : "Selected stretches and accepted GPS matches. Interior alignment uses approximate distance progress.";
+    if (c.roadPending)
+      $("comparison-method").textContent =
+        "Choose a comparison road before reviewing matches or analysing these saved stretches.";
+    if (c.mode === "terrain")
+      $("comparison-method").textContent =
+        "Different hills: original effort traces share the selected axis, without geographic alignment. Compare length, gain and gradient alongside speed and heart rate; these do not establish equal effort. Same-road time advantage and terrain attribution are unavailable.";
   }
   function availability(c) {
     const selected = c.entries.filter((e) => state.selected.includes(e.rideId));
@@ -661,18 +695,20 @@ export function createComparisonWorkspace({
     return {
       selected,
       missing,
-      label: !c.entries.length
-        ? hasWork(c)
-          ? "Sections only"
-          : "Empty"
-        : !selected.length
-          ? "No selected rides"
-          : missing.length
-            ? `Partial (${selected.length}/${c.entries.length})`
-            : c.id === collection.activeId &&
-                state.matches.length < c.entries.length
-              ? `Review matches (${state.matches.length}/${c.entries.length})`
-              : "Ready",
+      label: c.roadPending
+        ? "Choose road"
+        : !c.entries.length
+          ? hasWork(c)
+            ? "Sections only"
+            : "Empty"
+          : !selected.length
+            ? "No selected rides"
+            : missing.length
+              ? `Partial (${selected.length}/${c.entries.length})`
+              : c.id === collection.activeId &&
+                  state.matches.length < c.entries.length
+                ? `Review matches (${state.matches.length}/${c.entries.length})`
+                : "Ready",
     };
   }
   async function includeRides(ids) {
@@ -725,6 +761,7 @@ export function createComparisonWorkspace({
   }
   function add(entry) {
     const c = active();
+    entry.id = newId();
     let definition;
     if (!entry.sectionId) {
       definition = sectionForRange(entry);
@@ -744,12 +781,50 @@ export function createComparisonWorkspace({
       throw new Error("That stretch is already in this comparison.");
     if (definition)
       putDefinition({ ...definition, start: entry.start, end: entry.end });
-    if (!c.road) {
-      c.road = { rideId: entry.rideId, start: entry.start, end: entry.end };
-      entry.kind = "source";
+    if (c.mode === "terrain") {
+      entry.kind = "effort";
+      entry.relation = "similar-terrain";
+    } else if (!c.road) {
+      useRoad(c, entry);
     }
-    c.entries.push({ ...entry, id: newId() });
+    c.entries.push(entry);
     $("comparison-status").textContent = "Stretch added. Saving locally…";
+  }
+  function clearRoad(c) {
+    c.road = null;
+    delete c.roadEntryId;
+    c.roadPending = c.mode !== "terrain" && c.entries.length > 0;
+    c.matchDecisions = [];
+    for (const entry of c.entries) {
+      if (entry.kind === "source") entry.kind = "matched";
+      if (entry.kind === "effort") entry.relation = "similar-terrain";
+      delete entry.review;
+      delete entry.reviewReason;
+    }
+  }
+  function useRoad(c, entry) {
+    clearRoad(c);
+    c.road = { rideId: entry.rideId, start: entry.start, end: entry.end };
+    c.roadEntryId = entry.id;
+    c.roadPending = false;
+    entry.kind = "source";
+    entry.relation = "same-road";
+    delete entry.review;
+    delete entry.reviewReason;
+  }
+  function afterRemoval(c, removedIds) {
+    if (
+      !c.entries.length ||
+      c.roadPending ||
+      removedIds.includes(c.roadEntryId)
+    ) {
+      const remaining =
+        c.entries.length === 1 && c.entries[0].review !== "rejected"
+          ? c.entries[0]
+          : null;
+      clearRoad(c);
+      if (remaining && c.mode !== "terrain") useRoad(c, remaining);
+    }
   }
   async function showRange(entry) {
     if (!entry) return;
@@ -762,6 +837,157 @@ export function createComparisonWorkspace({
     onOpenRange?.(entry.id ? entry : undefined);
     persistSelection();
     render();
+  }
+  async function createFromHills(observations, mode, name, library) {
+    if (
+      !["same-road", "terrain"].includes(mode) ||
+      observations.length < 2 ||
+      observations.length > 200
+    )
+      throw new Error("Select between 2 and 200 hill passes.");
+    if (!name.trim()) {
+      const group = library.groups.find((g) =>
+        g.observationIds.includes(observations[0].id),
+      );
+      const base =
+        mode === "same-road"
+          ? `${(group?.name || "Hill").slice(0, 100)} passes`
+          : "Different hills";
+      name = base;
+      for (
+        let suffix = 2;
+        collection.items.some(
+          (c) => comparisonNameKey(c.name) === comparisonNameKey(name),
+        );
+        suffix++
+      )
+        name = `${base} ${suffix}`;
+    }
+    name = name.trim().replace(/\s+/g, " ");
+    if (!name || name.length > 120)
+      throw new Error("Give the new comparison a name (up to 120 characters).");
+    if (
+      collection.items.some(
+        (c) => comparisonNameKey(c.name) === comparisonNameKey(name),
+      )
+    )
+      throw new Error("A comparison with that name already exists.");
+    if (hasWork(active()) && !active().name)
+      throw new Error(
+        "Name your current comparison in the Comparisons tab before creating another. Your hill selection will stay here.",
+      );
+    const groupFor = (o) =>
+      library.groups.find((g) => g.observationIds.includes(o.id));
+    if (
+      mode === "same-road" &&
+      (!groupFor(observations[0]) ||
+        observations.some(
+          (o) => groupFor(o)?.id !== groupFor(observations[0]).id,
+        ))
+    )
+      throw new Error(
+        "Confirm these passes as one physical hill before creating a same-road comparison.",
+      );
+    await Promise.all(observations.map((o) => getRide(o.rideId)));
+    // Save the current context before building a new, independent snapshot.
+    await save();
+    const previous = structuredClone(collection),
+      previousSelected = [...state.selected];
+    try {
+      let c = active();
+      if (hasWork(c) || c.name) {
+        if (collection.items.length >= 100)
+          throw new Error("This workspace already has 100 comparisons.");
+        c = fresh();
+        collection.items.push(c);
+      }
+      Object.assign(c, {
+        name,
+        mode,
+        axis: "progress",
+        entries: [],
+        sections: [],
+        road: null,
+      });
+      const first = observations[0],
+        canonical = stretchPoints(
+          loaded.get(first.rideId).points,
+          first.start,
+          first.end,
+        );
+      for (const [i, observation] of observations.entries()) {
+        let start = observation.start,
+          end = observation.end,
+          kind = "effort";
+        if (mode === "same-road" && i) {
+          kind = "matched";
+          const ride = loaded.get(observation.rideId),
+            matches = findMatches(ride, canonical, state.settings.matchRadius);
+          const match = sectionCandidates(
+            observation,
+            matches.map((m) => ({
+              ...m,
+              start: m.startIndex,
+              end: m.endIndex,
+            })),
+            ride.points,
+            50,
+          )[0]?.candidate;
+          if (match) {
+            start = match.startIndex;
+            end = match.endIndex;
+          }
+        } else if (mode === "same-road") kind = "source";
+        const sectionId = `library-${newId()}`,
+          group = groupFor(observation);
+        c.sections.push({
+          id: sectionId,
+          rideId: observation.rideId,
+          start,
+          end,
+          kind: "hill",
+          name: group?.name || observation.name,
+        });
+        c.entries.push({
+          id: newId(),
+          sectionId,
+          rideId: observation.rideId,
+          start,
+          end,
+          kind,
+          relation: mode === "terrain" ? "similar-terrain" : "same-road",
+          hillObservationId: observation.id,
+          ...(group ? { hillGroupId: group.id } : {}),
+        });
+      }
+      c.road =
+        mode === "same-road"
+          ? { rideId: first.rideId, start: first.start, end: first.end }
+          : null;
+      if (c.road) c.roadEntryId = c.entries[0].id;
+      c.baseline = c.entries[0].id;
+      c.comparison = c.entries[1].id;
+      c.selected = [...new Set(observations.map((o) => o.rideId))];
+      c.browse = {
+        rideId: first.rideId,
+        start: Math.floor(first.start),
+        end: Math.ceil(first.end),
+      };
+      state.selected = c.selected;
+      await activate(c.id, { restoreSelection: true });
+      await save();
+    } catch (error) {
+      collection = previous;
+      state.selected = previousSelected;
+      await activate(previous.activeId);
+      throw error;
+    }
+  }
+  async function previewHill(observation) {
+    if (editing) await cancelEdit();
+    rememberDraft();
+    selectionChanged();
+    await showRange(observation);
   }
   function selectionChanged({ adopt = false } = {}) {
     $("stretch-status").textContent = "";
@@ -987,33 +1213,66 @@ export function createComparisonWorkspace({
       );
     if (removeButton)
       task("Removing stretch…", async () => {
-        const c = active();
-        const entry = c.entries.find(
-          (item) => item.id === removeButton.dataset.entryRemove,
-        );
-        const id = entry && entrySectionId(entry);
-        if (editing?.id === removeButton.dataset.entryRemove)
-          await cancelEdit();
-        c.entries = c.entries.filter(
-          (x) => x.id !== removeButton.dataset.entryRemove,
-        );
-        if (
-          entry &&
-          !c.entries.some(
-            (item) =>
-              item.rideId === entry.rideId && entrySectionId(item) === id,
-          )
-        ) {
-          const original = c.sections.find(
-            (section) => section.rideId === entry.rideId && section.id === id,
+        const previous = structuredClone(collection),
+          previousEditing = structuredClone(editing),
+          previousBaseline = state.baseline,
+          previousComparison = state.comparison;
+        try {
+          const c = active();
+          const entry = c.entries.find(
+            (item) => item.id === removeButton.dataset.entryRemove,
           );
-          if (original) original.deleted = true;
+          const id = entry && entrySectionId(entry);
+          if (editing?.id === removeButton.dataset.entryRemove)
+            await cancelEdit();
+          c.entries = c.entries.filter(
+            (x) => x.id !== removeButton.dataset.entryRemove,
+          );
+          if (
+            entry &&
+            !c.entries.some(
+              (item) =>
+                item.rideId === entry.rideId && entrySectionId(item) === id,
+            )
+          ) {
+            const original = c.sections.find(
+              (section) => section.rideId === entry.rideId && section.id === id,
+            );
+            if (original) original.deleted = true;
+          }
+          afterRemoval(c, entry ? [entry.id] : []);
+          render();
+          await save();
+        } catch (error) {
+          collection = previous;
+          editing = previousEditing;
+          state.baseline = previousBaseline;
+          state.comparison = previousComparison;
+          render();
+          throw error;
         }
-        if (!c.entries.length) {
-          c.road = null;
-          c.matchDecisions = [];
+      });
+    const roadButton = e.target.closest("[data-entry-road]");
+    if (roadButton)
+      task("Changing the comparison road…", async () => {
+        const c = active(),
+          previous = structuredClone(c),
+          entry = c.entries.find(
+            (item) => item.id === roadButton.dataset.entryRoad,
+          );
+        if (!entry) return;
+        await getRide(entry.rideId);
+        try {
+          useRoad(c, entry);
+          render();
+          await save();
+        } catch (error) {
+          collection.items[
+            collection.items.findIndex((item) => item.id === c.id)
+          ] = previous;
+          render();
+          throw error;
         }
-        render();
       });
     const include = e.target.closest("[data-include-saved-ride]");
     if (include)
@@ -1200,6 +1459,11 @@ export function createComparisonWorkspace({
     saveSection,
     deleteSection,
     reviewEntry,
-    hasEfforts: () => state.matches.some((e) => e.manual),
+    createFromHills,
+    previewHill,
+    hasEfforts: () =>
+      active()?.roadPending ||
+      active()?.mode === "terrain" ||
+      state.matches.some((e) => e.manual),
   };
 }
