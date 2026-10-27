@@ -644,7 +644,7 @@ export function createComparisonWorkspace({
     $("selection-context").textContent = ambiguous
       ? "Several existing versions overlap this section. Select one in Comparison sections to edit it, or remove unwanted versions from the comparison list."
       : editing
-        ? `Editing section ${c.entries.findIndex((e) => e.id === editing.id) + 1} in “${c.name || "Untitled comparison"}”. Save changes updates this section and its included range together.`
+        ? `Editing section ${c.entries.findIndex((e) => e.id === editing.id) + 1} in “${c.name || "Untitled comparison"}”. ${dirty ? "Save changes updates this section and its included range together." : "No changes to save. Change the name, type or boundaries to enable Save, or choose Done."}`
         : duplicate && selectedSection?.isNew
           ? "This range is already included. Save existing section updates it instead of adding a copy."
           : duplicate
@@ -988,6 +988,118 @@ export function createComparisonWorkspace({
     rememberDraft();
     selectionChanged();
     await showRange(observation);
+  }
+  async function applyHillBounds(updates) {
+    const draft = getSection?.(),
+      saved =
+        draft &&
+        active().sections?.find(
+          (s) => s.id === draft.id && s.rideId === draft.rideId,
+        ),
+      dirty = draft
+        ? draft.isNew ||
+          !saved ||
+          ["start", "end", "name", "kind"].some(
+            (key) => draft[key] !== saved[key],
+          )
+        : editing &&
+          (state.start !== editing.start || state.end !== editing.end);
+    if (dirty)
+      throw new Error(
+        "Save or cancel the unsaved section changes before applying hill bounds.",
+      );
+    const c = active(),
+      previous = structuredClone(collection),
+      previousEditing = structuredClone(editing),
+      previousRange = { start: state.start, end: state.end };
+    let movedEditor = false;
+    try {
+      for (const update of updates) {
+        const entry = c.entries.find(
+          (e) => e.id === update.entryId && e.rideId === update.rideId,
+        );
+        if (!entry || entry.review === "rejected")
+          throw new Error("Comparison pass is no longer available.");
+        const ride = loaded.get(entry.rideId);
+        if (!ride)
+          throw new Error(
+            "Include this pass’s source ride before applying hill bounds.",
+          );
+        if (!(
+          Number.isFinite(update.start) &&
+          Number.isFinite(update.end) &&
+          update.start >= 0 &&
+          update.start < update.end &&
+          update.end <= ride.points.length - 1
+        ))
+          throw new Error("Invalid saved hill range.");
+        const points = stretchPoints(ride.points, update.start, update.end);
+        if (points.at(-1).d - points[0].d < 20)
+          throw new Error("The hill range must span at least 20 m.");
+        if (entry.start === update.start && entry.end === update.end) continue;
+        if (
+          c.entries.some(
+            (e) =>
+              e.id !== entry.id &&
+              e.rideId === entry.rideId &&
+              Math.abs(e.start - update.start) < 0.02 &&
+              Math.abs(e.end - update.end) < 0.02,
+          )
+        )
+          throw new Error(
+            "That hill range is already included as another pass.",
+          );
+        Object.assign(entry, {
+          start: update.start,
+          end: update.end,
+          kind: "effort",
+          relation: "same-road",
+          review: "confirmed",
+          reviewReason:
+            "Reviewed hill bounds applied manually; original comparison road anchors retained.",
+        });
+        const section = c.sections?.find(
+          (s) => s.id === entry.sectionId && s.rideId === entry.rideId,
+        );
+        if (section)
+          Object.assign(section, {
+            start: entry.start,
+            end: entry.end,
+            manual: true,
+          });
+      }
+      if (editing && updates.some((u) => u.entryId === editing.id)) {
+        const entry = c.entries.find((e) => e.id === editing.id);
+        editing.start = state.start = Math.floor(entry.start);
+        editing.end = state.end = Math.ceil(entry.end);
+        movedEditor = true;
+        onOpenRange?.(entry);
+      }
+      resolutionCache.clear();
+      render();
+      await save();
+    } catch (error) {
+      collection = previous;
+      editing = previousEditing;
+      if (movedEditor) {
+        Object.assign(state, previousRange);
+        onOpenRange?.(active().entries.find((e) => e.id === editing?.id));
+      }
+      resolutionCache.clear();
+      render();
+      throw error;
+    }
+  }
+  function rangeSummary(range) {
+    const ride = loaded.get(range.rideId);
+    if (!ride) return null;
+    const points = stretchPoints(ride.points, range.start, range.end);
+    return {
+      distance: points.at(-1).d - points[0].d,
+      elapsed: (points.at(-1).t - points[0].t) / 1000,
+      startSeconds: (points[0].t - ride.points[0].t) / 1000,
+      endSeconds: (points.at(-1).t - ride.points[0].t) / 1000,
+    };
   }
   function selectionChanged({ adopt = false } = {}) {
     $("stretch-status").textContent = "";
@@ -1461,6 +1573,8 @@ export function createComparisonWorkspace({
     reviewEntry,
     createFromHills,
     previewHill,
+    applyHillBounds,
+    rangeSummary,
     hasEfforts: () =>
       active()?.roadPending ||
       active()?.mode === "terrain" ||

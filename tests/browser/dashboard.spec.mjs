@@ -249,6 +249,10 @@ test("one stretch editor preserves selections and explicitly updates only the ch
   );
   await expect(page.locator("#add-stretch")).toHaveText("Save changes");
   await expect(page.locator("#add-stretch")).toBeDisabled();
+  await expect(page.locator("#add-stretch")).toHaveCSS("cursor", "not-allowed");
+  await expect(page.locator("#selection-context")).toContainText(
+    "No changes to save",
+  );
   await selectRange(page, 110, 200);
   await expect(page.locator("#matches tbody tr")).toHaveCount(2);
   workspace = await (await request.get("/api/workspace")).json();

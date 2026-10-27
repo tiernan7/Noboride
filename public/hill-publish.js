@@ -9,8 +9,10 @@ export function createHillPublisher({
   esc,
   rideName,
   getRide,
+  applyHillBounds,
+  rangeSummary,
 }) {
-  host.innerHTML = `<details id="comparison-hill-editor"><summary>Save stretches to the hill library</summary><form id="hill-publish-form"><p class="subtle">Define or extend a named hill using this comparison’s saved sections. Your comparison keeps its own names and boundaries.</p><div class="hill-actions"><button id="hill-publish-all" class="text-button" type="button">Select whole comparison</button><button id="hill-publish-none" class="text-button" type="button">Clear selection</button></div><div id="hill-publish-entries"></div><div id="hill-publish-alignment" class="hill-alignment" hidden></div><div class="hill-publish-controls"><label>Hill group<select id="hill-publish-target"><option value="">Create a new hill</option></select></label><label id="hill-publish-name-label">Hill name<input id="hill-publish-name" maxlength="120" placeholder="Name this physical hill"></label></div><p id="hill-publish-review-count" class="subtle"></p><button id="hill-publish-save" class="button primary" type="submit">Save to hill library</button><p id="hill-publish-status" role="status"></p></form><details id="hill-group-management"><summary>Manage named hills</summary><div id="hill-group-members"></div></details></details>`;
+  host.innerHTML = `<details id="comparison-hill-editor"><summary>Save stretches to the hill library</summary><form id="hill-publish-form"><p class="subtle">Define or extend a named hill using this comparison’s saved sections. Your comparison keeps its own names and boundaries.</p><div class="hill-actions"><button id="hill-publish-all" class="text-button" type="button">Select whole comparison</button><button id="hill-publish-none" class="text-button" type="button">Clear selection</button></div><div id="hill-publish-entries"></div><div id="hill-publish-alignment" class="hill-alignment" hidden></div><div class="hill-publish-controls"><label>Hill group<select id="hill-publish-target"><option value="">Create a new hill</option></select></label><label id="hill-publish-name-label">Hill name<input id="hill-publish-name" maxlength="120" placeholder="Name this physical hill"></label></div><p id="hill-publish-review-count" class="subtle"></p><button id="hill-publish-save" class="button primary" type="submit">Save to hill library</button><p id="hill-publish-status" role="status"></p><div id="hill-apply-controls" hidden><button id="hill-publish-apply" class="button small" type="button">Apply saved hill bounds to comparison</button><p class="data-note">Updates selected passes and their distance, elapsed time, sensor statistics and power together. Changed ranges are manual comparisons; original road anchors stay separate. Save hill drafts first.</p></div></form><details id="hill-group-management"><summary>Manage named hills</summary><div id="hill-group-members"></div></details></details>`;
   const $ = (id) => host.querySelector(`#${id}`);
   let key = "",
     selection = new Set(),
@@ -18,6 +20,7 @@ export function createHillPublisher({
     previousIds = new Set(),
     drafts = new Map(),
     reviewed = new Set(),
+    reviewTarget = null,
     targetChosen = false;
   const note = (text) => {
     $("hill-publish-status").textContent = text;
@@ -56,7 +59,6 @@ export function createHillPublisher({
     host.scrollIntoView({ block: "start", behavior: "smooth" });
   };
   $("hill-publish-all").onclick = () => {
-    reviewed.clear();
     selection = new Set(
       getComparison()
         .entries.filter((e) => e.review !== "rejected")
@@ -66,7 +68,6 @@ export function createHillPublisher({
     render();
   };
   $("hill-publish-none").onclick = () => {
-    reviewed.clear();
     selection.clear();
     alignment.close();
     render();
@@ -102,6 +103,8 @@ export function createHillPublisher({
         id: `draft-${entry.id}`,
         rideId: entry.rideId,
         ...draft,
+        comparisonStart: entry.start,
+        comparisonEnd: entry.end,
         name: rideName(entry.rideId),
         hillName:
           existing?.name || $("hill-publish-name").value.trim() || "New hill",
@@ -117,7 +120,6 @@ export function createHillPublisher({
   };
   $("hill-publish-target").onchange = () => {
     targetChosen = true;
-    reviewed.clear();
     alignment.close();
     render();
     $("hill-publish-name-label").hidden = !!$("hill-publish-target").value;
@@ -128,7 +130,6 @@ export function createHillPublisher({
       input.checked
         ? selection.add(input.dataset.publishEntry)
         : selection.delete(input.dataset.publishEntry);
-    reviewed.clear();
     alignment.close();
     render();
   };
@@ -213,7 +214,7 @@ export function createHillPublisher({
       library.groups.push({ id, name, observationIds: [...new Set(ids)] });
     library.observations = records;
     busy = true;
-    $("hill-publish-save").disabled = true;
+    render();
     note("Saving hill…");
     try {
       await saveLibrary(library);
@@ -221,7 +222,51 @@ export function createHillPublisher({
       targetChosen = true;
       note("Hill saved. Open Hills to explore its summary.");
     } catch (error) {
-      note(`Not saved: ${error.message}`);
+      note(
+        error.name === "NetworkError"
+          ? `Save could not be confirmed: ${error.message} Keep this page open; your draft and alignment reviews are retained for retry.`
+          : `Not saved: ${error.message}`,
+      );
+    } finally {
+      busy = false;
+      render();
+    }
+  };
+  $("hill-publish-apply").onclick = async () => {
+    if (busy) return;
+    const c = getComparison(),
+      catalog = getCatalog(),
+      target = $("hill-publish-target").value;
+    const updates = c.entries
+      .filter((e) => selection.has(e.id) && e.review !== "rejected")
+      .flatMap((e) => {
+        const linked = hillMembership(e, catalog.library, catalog.observations);
+        return linked?.group.id === target &&
+          (linked.observation.start !== e.start ||
+            linked.observation.end !== e.end)
+          ? [
+              {
+                entryId: e.id,
+                rideId: e.rideId,
+                start: linked.observation.start,
+                end: linked.observation.end,
+              },
+            ]
+          : [];
+      });
+    if (!updates.length) return;
+    busy = true;
+    render();
+    note("Applying saved hill bounds…");
+    try {
+      await applyHillBounds(updates);
+      note(
+        "Hill bounds applied. Comparison distances, elapsed times, sensors and power recalculated. Original road anchors retained; changed ranges are manual.",
+      );
+    } catch (error) {
+      note(
+        `Not applied: ${error.message}. Comparison ranges were restored; saved hill bounds remain available for retry.`,
+      );
     } finally {
       busy = false;
       render();
@@ -270,6 +315,7 @@ export function createHillPublisher({
       drafts.clear();
       reviewed.clear();
       targetChosen = false;
+      reviewTarget = null;
       $("hill-publish-target").value = "";
       note("");
       alignment.close();
@@ -298,6 +344,12 @@ export function createHillPublisher({
       reviewed.clear();
       alignment.close();
     }
+    const targetChanged = reviewTarget !== target;
+    if (targetChanged) {
+      reviewed.clear();
+      reviewTarget = target;
+      alignment.close();
+    }
     for (const e of entries) {
       if (!previousIds.has(e.id)) selection.add(e.id);
       const draft = drafts.get(e.id),
@@ -315,39 +367,65 @@ export function createHillPublisher({
           sourceEnd: e.end,
         });
         reviewed.delete(e.id);
-        if (saved?.alignment?.reviewed && linked.group.id === target)
-          reviewed.add(e.id);
       }
+      const current = drafts.get(e.id);
+      if (
+        (targetChanged || !draft || current !== draft) &&
+        saved?.alignment?.reviewed &&
+        linked.group.id === target &&
+        current.start === saved.start &&
+        current.end === saved.end
+      )
+        reviewed.add(e.id);
     }
     previousIds = new Set(entries.map((e) => e.id));
     document.getElementById("open-hill-publish").disabled =
       busy || !entries.length;
+    const clock = (seconds) => {
+      const s = Math.round(seconds);
+      return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    };
+    const describe = (range) => {
+      const stats = rangeSummary(range);
+      return stats
+        ? `${(stats.distance / (state.settings.units === "imperial" ? 1609.344 : 1000)).toFixed(2)} ${state.settings.units === "imperial" ? "mi" : "km"} · elapsed ${clock(stats.elapsed)} · ${clock(stats.startSeconds)}–${clock(stats.endSeconds)} into ride`
+        : "Include source ride to inspect distance and time";
+    };
     const membershipLabel = (e) => {
       const linked = associations.get(e.id),
         draft = drafts.get(e.id);
-      if (!linked) return "";
       const changed =
-        draft.start !== linked.observation.start ||
-        draft.end !== linked.observation.end;
-      const status = changed
-        ? reviewed.has(e.id)
-          ? "reviewed changes · not saved yet"
-          : "boundary changes need review"
-        : linked.observation.alignment?.reviewed
-          ? "saved alignment"
-          : "alignment review needed";
-      return `<small data-hill-membership="${esc(e.id)}">In ${esc(linked.group.name)} · ${status}</small>`;
+          linked &&
+          (draft.start !== linked.observation.start ||
+            draft.end !== linked.observation.end),
+        savedReview =
+          linked?.group.id === target &&
+          linked?.observation.alignment?.reviewed &&
+          !changed,
+        status = reviewed.has(e.id)
+          ? savedReview
+            ? "saved alignment"
+            : changed
+              ? "reviewed changes · not saved yet"
+              : "alignment reviewed · not saved yet"
+          : changed
+            ? "boundary changes need review"
+            : "alignment review needed",
+        membership = linked
+          ? `In ${esc(linked.group.name)}`
+          : "Not yet in hill library";
+      return `<small data-hill-membership="${esc(e.id)}">${membership} · ${status}</small>`;
     };
     $("hill-publish-entries").innerHTML =
       entries
         .map(
           (e) =>
-            `<div class="hill-publish-row"><label class="check-label"><input type="checkbox" data-publish-entry="${esc(e.id)}" ${selection.has(e.id) ? "checked" : ""}><span>${esc(rideName(e.rideId))} · ${esc(c.sections?.find((s) => s.id === e.sectionId && s.rideId === e.rideId)?.name || "Stretch")}${membershipLabel(e)}</span></label><button type="button" class="button small" data-hill-align="${esc(e.id)}" ${!selection.has(e.id) ? "disabled" : ""}>${reviewed.has(e.id) ? "✓ Reviewed — adjust" : "Review alignment"}</button></div>`,
+            `<div class="hill-publish-row"><label class="check-label"><input type="checkbox" data-publish-entry="${esc(e.id)}" ${selection.has(e.id) ? "checked" : ""}><span>${esc(rideName(e.rideId))} · ${esc(c.sections?.find((s) => s.id === e.sectionId && s.rideId === e.rideId)?.name || "Stretch")}${membershipLabel(e)}<small data-hill-comparison-range="${esc(e.id)}">Comparison timing: ${describe(e)}</small><small data-hill-draft-range="${esc(e.id)}">Hill ${associations.get(e.id) && drafts.get(e.id).start === associations.get(e.id).observation.start && drafts.get(e.id).end === associations.get(e.id).observation.end ? "saved range" : "draft"}: ${describe({ ...e, ...drafts.get(e.id) })}</small></span></label><button type="button" class="button small" data-hill-align="${esc(e.id)}" ${!selection.has(e.id) ? "disabled" : ""}>${reviewed.has(e.id) ? "✓ Reviewed — adjust" : "Review alignment"}</button></div>`,
         )
         .join("") ||
       '<p class="subtle">Add a stretch to this comparison first.</p>';
     $("hill-publish-review-count").textContent =
-      `${[...selection].filter((id) => reviewed.has(id) && previousIds.has(id)).length} of ${entries.filter((e) => selection.has(e.id)).length} selected passes reviewed. Hill-only boundaries and review decisions are saved in the hill library.`;
+      `${[...selection].filter((id) => reviewed.has(id) && previousIds.has(id)).length} of ${entries.filter((e) => selection.has(e.id)).length} selected passes reviewed. ${!entries.some((e) => selection.has(e.id)) ? "Select at least one pass to enable Save." : entries.some((e) => selection.has(e.id) && !reviewed.has(e.id)) ? "Use Review alignment and confirm each selected pass to enable Save." : "Hill-only boundaries and review decisions are saved in the hill library."}`;
     $("hill-publish-target").innerHTML =
       '<option value="">Create a new hill</option>' +
       catalog.library.groups
@@ -355,14 +433,39 @@ export function createHillPublisher({
         .join("");
     if (catalog.library.groups.some((g) => g.id === target))
       $("hill-publish-target").value = target;
+    const savedDifferences = entries
+      .filter((e) => selection.has(e.id))
+      .filter((e) => {
+        const linked = associations.get(e.id);
+        return (
+          linked?.group.id === target &&
+          (linked.observation.start !== e.start ||
+            linked.observation.end !== e.end)
+        );
+      });
+    $("hill-apply-controls").hidden = !savedDifferences.length;
+    $("hill-publish-apply").disabled =
+      busy ||
+      savedDifferences.some((e) => {
+        const saved = associations.get(e.id).observation,
+          draft = drafts.get(e.id);
+        return (
+          !rangeSummary(e) ||
+          draft.start !== saved.start ||
+          draft.end !== saved.end
+        );
+      });
     $("hill-publish-save").disabled =
       busy ||
       !entries.some((e) => selection.has(e.id)) ||
       entries.some((e) => selection.has(e.id) && !reviewed.has(e.id));
+    $("hill-publish-save").setAttribute("aria-busy", String(busy));
     $("hill-publish-name-label").hidden = !!target;
-    $("hill-publish-save").textContent = target
-      ? "Save hill changes"
-      : "Save to hill library";
+    $("hill-publish-save").textContent = busy
+      ? "Saving…"
+      : target
+        ? "Save hill changes"
+        : "Save to hill library";
     const linkedGroup = catalog.library.groups.find((g) => g.id === target);
     $("comparison-hill-editor").querySelector("summary").textContent =
       linkedGroup

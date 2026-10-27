@@ -36,14 +36,17 @@ test("hill mapping combines independently bounded sections without selecting sha
   assert.equal(result.excluded.length, 0);
   assert.ok(Math.abs(result.length - 1000) < 1);
   assert.equal(result.profile[0].ele.rides, 1);
-  assert.equal(result.profile[50].ele.rides, 2);
-  assert.equal(result.profile[100].ele.rides, 1);
-  assert.ok(Math.abs(result.profile[50].ele.mean - 50) < 0.1);
-  assert.ok(Math.abs(result.profile[100].ele.mean - 100) < 0.1);
-  assert.equal(result.profile[50].speed.mean, 6);
-  assert.equal(result.profile[50].hr.mean, 0);
-  assert.equal(result.profile[50].hr.rides, 1);
-  assert.equal(result.profile[50].power.mean, 0);
+  assert.equal(result.profile.find((p) => p.progress === 0.5).ele.rides, 2);
+  assert.equal(result.profile.at(-1).ele.rides, 1);
+  assert.ok(
+    Math.abs(result.profile.find((p) => p.progress === 0.5).ele.mean - 50) <
+      0.1,
+  );
+  assert.ok(Math.abs(result.profile.at(-1).ele.mean - 100) < 0.1);
+  assert.equal(result.profile.find((p) => p.progress === 0.5).speed.mean, 6);
+  assert.equal(result.profile.find((p) => p.progress === 0.5).hr.mean, 0);
+  assert.equal(result.profile.find((p) => p.progress === 0.5).hr.rides, 1);
+  assert.equal(result.profile.find((p) => p.progress === 0.5).power.mean, 0);
   assert.deepEqual([a, b], original);
 });
 test("calculation exclusions retain hill geometry and missing channels remain absent", () => {
@@ -53,15 +56,28 @@ test("calculation exclusions retain hill geometry and missing channels remain ab
   });
   assert.equal(result.passes.length, 1);
   assert.ok(Math.abs(result.length - 1000) < 1);
-  assert.equal(result.profile[50].speed.mean, 4);
-  assert.equal(result.profile[50].hr.mean, null);
-  assert.equal(result.profile[90].ele.mean, null);
+  assert.equal(result.profile.find((p) => p.progress === 0.5).speed.mean, 4);
+  assert.equal(result.profile.find((p) => p.progress === 0.5).hr.mean, null);
+  assert.equal(result.profile.find((p) => p.progress === 0.9).ele.mean, null);
   const empty = hillProfile(observations, get, null, {
     ...DEFAULTS,
     includedObservationIds: [],
   });
   assert.equal(empty.passes.length, 0);
   assert.ok(empty.profile.every((p) => p.ele.mean == null));
+});
+test("every supported box midpoint has its own exact geographic display station", () => {
+  const result = hillProfile(observations, get, null, DEFAULTS);
+  for (const density of [10, 20, 40, 80])
+    for (let i = 0; i < density; i++) {
+      const progress = (i + 0.5) / density,
+        station = result.profile.find(
+          (p) => Math.abs(p.progress - progress) < 1e-12,
+        );
+      assert.ok(station, `Missing ${density}-box station ${i}`);
+      // The synthetic road rises 100 m uniformly over 1000 m.
+      assert.ok(Math.abs(station.ele.mean - 100 * progress) < 0.1);
+    }
 });
 test("opposite direction, remote roads and recording gaps remain excluded from the hill calculation", () => {
   for (const change of [
@@ -79,7 +95,10 @@ test("opposite direction, remote roads and recording gaps remain excluded from t
     );
     assert.equal(result.passes.length, 1);
     assert.equal(result.excluded.length, 1);
-    assert.notEqual(result.profile[50].speed.mean, 6);
+    assert.notEqual(
+      result.profile.find((p) => p.progress === 0.5).speed.mean,
+      6,
+    );
   }
 });
 test("repeated passes average within a ride before giving each ride equal weight", () => {
@@ -105,8 +124,54 @@ test("repeated passes average within a ride before giving each ride equal weight
     DEFAULTS,
   );
   assert.equal(result.passes.length, 3);
-  assert.equal(result.profile[50].speed.rides, 2);
-  assert.equal(result.profile[50].speed.mean, 6.5);
+  assert.equal(result.profile.find((p) => p.progress === 0.5).speed.rides, 2);
+  assert.equal(result.profile.find((p) => p.progress === 0.5).speed.mean, 6.5);
+  assert.ok(
+    Math.abs(
+      result.profile.find((p) => p.progress === 0.5).speed.sd -
+        3 / Math.sqrt(2),
+    ) < 1e-9,
+  );
+  assert.equal(result.profile.find((p) => p.progress === 0.5).speed.q1, 5.75);
+  assert.equal(result.profile.find((p) => p.progress === 0.5).speed.q3, 7.25);
+});
+test("hill distributions use ride means, sample SD and quartiles with min/max whiskers and no exclusions", () => {
+  const rides = [1, 2, 3, 4, 10].map((speed, i) => ride(`ride-${i}`, 0, speed)),
+    obs = rides.map((r) => ({ id: r.id, rideId: r.id, start: 0, end: 100 })),
+    result = hillProfile(
+      obs,
+      (id) => rides.find((r) => r.id === id),
+      null,
+      DEFAULTS,
+    ),
+    value = result.profile.find((p) => p.progress === 0.5).speed;
+  assert.equal(value.rides, 5);
+  assert.equal(value.mean, 4);
+  assert.equal(value.sd, Math.sqrt(12.5));
+  assert.equal(value.q1, 2);
+  assert.equal(value.median, 3);
+  assert.equal(value.q3, 4);
+  assert.equal(value.whiskerLow, 1);
+  assert.equal(value.whiskerHigh, 10);
+  assert.deepEqual(value.outliers, []);
+  assert.equal(result.profile.find((p) => p.progress === 0.5).power.sd, 0);
+  const elevation = result.profile.find((p) => p.progress === 0.5).ele;
+  assert.ok(Math.abs(elevation.median - 50) < 0.1);
+  assert.ok(Math.abs(elevation.whiskerLow - 50) < 0.1);
+});
+test("hill distributions keep missing values absent and a single ride cannot supply sample SD", () => {
+  const result = hillProfile(observations, get, null, DEFAULTS),
+    single = result.profile[0].speed,
+    missing = result.profile[0].hr;
+  assert.equal(single.rides, 1);
+  assert.equal(single.sd, null);
+  assert.equal(single.median, 4);
+  assert.equal(missing.rides, 0);
+  assert.equal(missing.mean, null);
+  assert.equal(missing.sd, null);
+  assert.equal(missing.q1, null);
+  assert.equal(missing.q3, null);
+  assert.deepEqual(missing.outliers, []);
 });
 test("comparison hill snapshots validate exact fractional source ranges and derive metrics without changing imported tracks", () => {
   const original = structuredClone(a),
@@ -158,4 +223,36 @@ test("comparison hill snapshots validate exact fractional source ranges and deri
     assert.throws(() =>
       validateSavedHillObservations([{ ...saved[0], ...bad }], () => a),
     );
+});
+
+test("hill summaries keep estimated minimum power separate, average repeats within rides and preserve missing masses", () => {
+  const first = ride("power-a", 0, 5),
+    second = ride("power-b", 40, 2.5);
+  second.points = second.points.map((p) => ({ ...p, t: p.t * 2 }));
+  const original = structuredClone([first, second]);
+  const members = [
+    { id: "power-a1", rideId: first.id, start: 0, end: 100 },
+    { id: "power-a2", rideId: first.id, start: 0, end: 100 },
+    { id: "power-b", rideId: second.id, start: 0, end: 100 },
+  ];
+  const get = (id) => (id === first.id ? first : second);
+  const result = hillProfile(members, get, null, {
+    ...DEFAULTS,
+    includeMinimumPower: true,
+    riderMassKg: 80,
+    bikeMassKg: 20,
+  });
+  const middle = result.profile[80];
+  // 100 kg × g × (100 m / 200 s), or / 400 s; repeated A is one ride's vote.
+  assert.ok(Math.abs(middle.minimumPower.mean - 367.749375) < 1e-8);
+  assert.equal(middle.minimumPower.rides, 2);
+  assert.equal(middle.power.mean, 0);
+  assert.equal(middle.cad.mean, 0);
+  assert.deepEqual([first, second], original);
+  const noMass = hillProfile(members, get, null, {
+    ...DEFAULTS,
+    includeMinimumPower: true,
+  });
+  assert.equal(noMass.profile[80].minimumPower.mean, null);
+  assert.equal(noMass.profile[80].power.mean, 0);
 });

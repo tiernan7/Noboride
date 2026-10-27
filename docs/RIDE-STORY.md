@@ -1,6 +1,6 @@
 # Ride story, nested terrain and route review
 
-This dev implementation covers the first three foundations in the requested ten-feature plan. It is interactive post-ride analysis of imported recordings. It does not add a live feed, psychological labels, estimated power, physiological thresholds or an external assistant.
+This implementation includes the three original ride-story foundations, the main hill-library and multi-channel comparison workflows, and a minimum mechanical-input foundation. It is interactive post-ride analysis of imported recordings. It does not add a live feed, psychological labels, physiological thresholds or an external assistant. The [current roadmap](ROADMAP.md) distinguishes implemented work, unfinished original scope and new proposals. The separate [minimum mechanical-input calculation](GRAVITY-POWER.md) uses supplied weights, elevation and speed/time; full crank-power modeling remains future work.
 
 ## Inspect an effort in context
 
@@ -53,14 +53,4 @@ No SQL schema migration was required: these are optional JSON metadata fields in
 
 ## Subsequent roadmap
 
-The [Hills library](HILLS.md) now provides comparison-side hill creation with mandatory per-pass review, separately persisted hill boundaries, composite profiles with coverage and variation, and one-point-per-identity terrain exploration. Different hills compare inline within Hills; individual pass analysis opens in Comparisons. Automatic identity/terrain clustering and broader route filters remain future work.
-
-The remaining areas include:
-
-1. Further validate composite alignment and boundary consistency on diverse real recordings; add route filters and terrain grouping independent of performance.
-2. Extend effort-shape comparisons with simultaneous multi-channel overlays and context across differing hills. The initial independent effort axes are implemented; they do not establish equal physiological effort.
-3. Exploration of possible riding-mode groups with confounders and an explicit no-clear-separation result. User labels such as attack/easy must not be inferred from speed.
-4. Richer preceding-climbing and ahead-terrain context across repeated efforts, with alternative explanations instead of emotional interpretation.
-5. Point/section annotations and equipment history. Associate supplied corrections with exact activity IDs and times rather than guessing from filenames; retain explicit reference/comparison choices and never hard-code a date as universal baseline.
-6. Optional physics-based power estimates, exposed assumptions/sensitivity, channel-consistency checks and strict separation from measured power or tested FTP.
-7. An evidence-grounded assistant whose observations link to visible ranges, separate observation/explanation/unknowns and retain user corrections. Keep analysis local and require an explicit data-sharing decision before introducing an external service. Live updates require an actual live feed.
+See [ROADMAP.md](ROADMAP.md) for the October 27, 2026 status audit and proposed order. The hill library, stacked available channels, spread/collapse controls and minimum-input power foundation are implemented. Remaining original work includes broader validation/filtering, richer surrounding-terrain summaries, structured annotations/equipment history, and deferred riding-mode, resistance-model and assistant work. Progress is a new candidate tab, not an explicit item from the original ten-area plan. Priorities remain recommendations until an implementation task is chosen.

@@ -5,6 +5,10 @@ import { fileURLToPath } from "node:url";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { randomUUID } from "node:crypto";
 import { Store } from "./lib/store.mjs";
+import {
+  validateGravityMasses,
+  validatePowerErrors,
+} from "./lib/gravity-power.mjs";
 import { databasePath } from "./lib/paths.mjs";
 import { validateComparisons } from "./lib/comparisons.mjs";
 import { parseUpload, normalizeRide } from "./lib/import.mjs";
@@ -74,6 +78,8 @@ function validSettings(v) {
     }
   }
   out.units = v.units === "metric" ? "metric" : "imperial";
+  Object.assign(out, validateGravityMasses(v));
+  Object.assign(out, validatePowerErrors(v));
   return out;
 }
 function validSegment(v) {
@@ -449,6 +455,9 @@ const staticFiles = {
   "/hills.js": "public/hills.js",
   "/hill-publish.js": "public/hill-publish.js",
   "/hill-summary.js": "public/hill-summary.js",
+  "/hill-chart.js": "public/hill-chart.js",
+  "/gravity-power.mjs": "lib/gravity-power.mjs",
+  "/gravity-profile.js": "public/gravity-profile.js",
   "/hill-compare.js": "public/hill-compare.js",
   "/hill-align.js": "public/hill-align.js",
   "/hill-profile.mjs": "lib/hill-profile.mjs",

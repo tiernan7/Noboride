@@ -179,6 +179,126 @@ test("Comparisons publishes vetted source snapshots with recoverable failures, e
   ).toBeTruthy();
   expect((await catalog(request)).library).toEqual(saved);
 });
+test("extending a saved hill reviews only new passes and retains the draft after a connection failure", async ({
+  page,
+  request,
+}) => {
+  const { c } = await seed(request, 3, true),
+    records = c.entries.slice(0, 2).map((e, i) => ({
+      id: `saved-${e.id}`,
+      rideId: e.rideId,
+      start: e.start,
+      end: e.end,
+      name: c.sections[i].name,
+      alignment: {
+        version: 1,
+        reviewed: true,
+        sourceStart: e.start,
+        sourceEnd: e.end,
+      },
+    })),
+    library = {
+      groups: [
+        {
+          id: "existing",
+          name: "Existing hill",
+          observationIds: records.map((o) => o.id),
+        },
+      ],
+      observations: records,
+    };
+  await put(request, "/api/hills", library);
+  await page.goto("/");
+  await settled(page);
+  await page.locator("#open-hill-publish").click();
+  const reviews = page.locator("#hill-publish-review-count");
+  await expect(reviews).toContainText("2 of 3 selected passes reviewed");
+  await expect(page.locator('[data-hill-align="e0"]')).toHaveText(
+    "✓ Reviewed — adjust",
+  );
+  await expect(page.locator('[data-hill-align="e1"]')).toHaveText(
+    "✓ Reviewed — adjust",
+  );
+  await expect(page.locator("#hill-publish-save")).toBeDisabled();
+  await page.locator('[data-publish-entry="e2"]').uncheck();
+  await expect(reviews).toContainText("2 of 2 selected passes reviewed");
+  await expect(page.locator("#hill-publish-save")).toBeEnabled();
+  await page.locator("#hill-publish-all").click();
+  await expect(reviews).toContainText("2 of 3 selected passes reviewed");
+  // Changing the physical identity still requires a fresh review. Returning to
+  // the saved identity restores its unchanged members' persisted approvals.
+  await page.locator("#hill-publish-target").selectOption("");
+  await expect(reviews).toContainText("0 of 3 selected passes reviewed");
+  await expect(page.locator('[data-hill-membership="e0"]')).toContainText(
+    "alignment review needed",
+  );
+  await page.locator("#hill-publish-target").selectOption("existing");
+  await expect(reviews).toContainText("2 of 3 selected passes reviewed");
+  await page.locator("#hill-publish-none").click();
+  await expect(reviews).toContainText("Select at least one pass");
+  await page.locator("#hill-publish-all").click();
+  await expect(reviews).toContainText("2 of 3 selected passes reviewed");
+  await page.locator('[data-hill-align="e2"]').click();
+  await expect(page.locator("#hill-align-confirm")).toBeEnabled();
+  await page.locator("#hill-align-confirm").click();
+  await expect(reviews).toContainText("3 of 3 selected passes reviewed");
+  await expect(page.locator('[data-hill-membership="e2"]')).toContainText(
+    "Not yet in hill library · alignment reviewed · not saved yet",
+  );
+  await page.locator('[data-publish-entry="e0"]').uncheck();
+  await page.locator('[data-publish-entry="e0"]').check();
+  await expect(reviews).toContainText("3 of 3 selected passes reviewed");
+  await page.route("**/api/hills", (route) =>
+    route.request().method() === "PUT"
+      ? route.abort("connectionrefused")
+      : route.continue(),
+  );
+  await page.locator("#hill-publish-save").click();
+  await expect(page.locator("#hill-publish-status")).toContainText(
+    "Cannot reach Noboride’s local server",
+  );
+  await expect(page.locator("#hill-publish-status")).toContainText(
+    "your draft and alignment reviews are retained",
+  );
+  await expect(page.locator("#hill-publish-save")).toBeEnabled();
+  await expect(reviews).toContainText("3 of 3 selected passes reviewed");
+  expect((await catalog(request)).library).toEqual(library);
+  await page.unroute("**/api/hills");
+  // A lost refresh response can follow a successful write. Keep the same draft
+  // IDs so retrying confirms the save without adding another pass or hill.
+  await page.route("**/api/hills", (route) =>
+    route.request().method() === "GET"
+      ? route.abort("connectionrefused")
+      : route.continue(),
+  );
+  await page.locator("#hill-publish-save").click();
+  await expect(page.locator("#hill-publish-status")).toContainText(
+    "Save could not be confirmed",
+  );
+  expect((await catalog(request)).library.observations).toHaveLength(3);
+  await expect(reviews).toContainText("3 of 3 selected passes reviewed");
+  await page.unroute("**/api/hills");
+  await page.locator("#hill-publish-save").click();
+  await expect(page.locator("#hill-publish-status")).toContainText(
+    "Hill saved",
+  );
+  const saved = (await catalog(request)).library;
+  expect(saved.groups).toEqual([
+    {
+      ...library.groups[0],
+      observationIds: ["saved-e0", "saved-e1", "saved-e2"],
+    },
+  ]);
+  expect(saved.observations.slice(0, 2)).toEqual(records);
+  expect(saved.observations).toHaveLength(3);
+  expect((await active(request)).entries).toEqual(c.entries);
+  expect((await active(request)).sections).toEqual(c.sections);
+  await page.reload();
+  await settled(page);
+  await page.locator("#open-hill-publish").click();
+  await expect(reviews).toContainText("3 of 3 selected passes reviewed");
+});
+
 test("reopened hill passes remember membership and separate crest edits update the existing hill only", async ({
   page,
   request,
@@ -207,6 +327,7 @@ test("reopened hill passes remember membership and separate crest edits update t
           ? i * 0.5
           : (run ? 65 : 60) * 0.5 - (i - (run ? 65 : 60)) * 0.2),
       speed: 5,
+      hr: 100 + i,
     })),
   }));
   expect(
@@ -243,7 +364,8 @@ test("reopened hill passes remember membership and separate crest edits update t
     roadEntryId: "copied-0",
     selected: rides.map((r) => r.id),
     baseline: "copied-0",
-    settings: DEFAULTS,
+    settings: { ...DEFAULTS, riderMassKg: 80, bikeMassKg: 20, gradeWindow: 50 },
+    metric: "minimumPower",
     entries: records.map((o, i) => ({
       id: `copied-${i}`,
       sectionId: `section-${i}`,
@@ -264,8 +386,16 @@ test("reopened hill passes remember membership and separate crest edits update t
       name: "Shared crest",
     })),
   };
-  await put(request, "/api/comparisons", { activeId: c.id, items: [c] });
+  const other = {
+    ...structuredClone(c),
+    id: "unaffected-crest",
+    name: "Unaffected crest comparison",
+  };
+  await put(request, "/api/comparisons", { activeId: c.id, items: [c, other] });
   const before = await active(request),
+    otherBefore = (await workspace(request)).items.find(
+      (item) => item.id === other.id,
+    ),
     errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto("/");
@@ -318,16 +448,45 @@ test("reopened hill passes remember membership and separate crest edits update t
   await expect(page.locator("#hill-publish-review-count")).toContainText(
     "1 of 2 selected passes reviewed",
   );
+  await expect(page.locator("#hill-publish-save")).toHaveCSS(
+    "cursor",
+    "not-allowed",
+  );
+  await expect(page.locator("#hill-publish-review-count")).toContainText(
+    "Use Review alignment and confirm each selected pass to enable Save",
+  );
   await expect(page.locator("#hill-align-confirm")).toBeEnabled();
   await page.locator("#hill-align-confirm").click();
-  await page.route("**/api/hills", (route) =>
-    route.request().method() === "PUT"
-      ? route.fulfill({ status: 500, json: { error: "Crest save failed" } })
-      : route.continue(),
-  );
+  let finishSave;
+  const saving = new Promise((resolve) => {
+    finishSave = resolve;
+  });
+  await page.route("**/api/hills", async (route) => {
+    if (route.request().method() !== "PUT") return route.continue();
+    await saving;
+    await route.fulfill({ status: 500, json: { error: "Crest save failed" } });
+  });
   await page.locator("#hill-publish-save").click();
+  try {
+    await expect(page.locator("#hill-publish-save")).toHaveText("Saving…");
+    await expect(page.locator("#hill-publish-save")).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+    await expect(page.locator("#hill-publish-save")).toHaveCSS(
+      "cursor",
+      "wait",
+    );
+  } finally {
+    finishSave();
+  }
   await expect(page.locator("#hill-publish-status")).toContainText(
     "Crest save failed",
+  );
+  await expect(page.locator("#hill-publish-save")).toBeEnabled();
+  await expect(page.locator("#hill-publish-save")).toHaveAttribute(
+    "aria-busy",
+    "false",
   );
   expect((await catalog(request)).library).toEqual(library);
   await page.unroute("**/api/hills");
@@ -360,6 +519,100 @@ test("reopened hill passes remember membership and separate crest edits update t
   await page
     .locator("#hill-publish-alignment")
     .screenshot({ path: "test-results/hill-crest-review.png" });
+  // Library saves remain independent; only this explicit action changes timing.
+  const sourceBeforeApply = (
+    await (await request.get("/api/rides/crest-review-1")).json()
+  ).points;
+  expect(
+    await page
+      .locator('[data-plot-line="copied-1"]')
+      .evaluate((path) => path.getBBox().height),
+  ).toBeGreaterThan(1);
+  await expect(
+    page.locator('[data-hill-comparison-range="copied-1"]'),
+  ).toContainText("elapsed 1:58");
+  await expect(
+    page.locator('[data-hill-draft-range="copied-1"]'),
+  ).toContainText("elapsed 1:50");
+  await expect(page.locator("#hill-publish-apply")).toBeEnabled();
+  // A merely open section editor must not block applying saved hill bounds.
+  await page.locator('[data-entry-edit="copied-1"]').first().click();
+  await page.locator("#climb-name").fill("Unsaved section name");
+  await page.locator("#hill-publish-apply").click();
+  await expect(page.locator("#hill-publish-status")).toContainText(
+    "unsaved section changes",
+  );
+  await expect(page.locator("#climb-name")).toHaveValue("Unsaved section name");
+  await page.locator("#climb-name").fill("Shared crest");
+
+  await page.route("**/api/comparisons", (route) =>
+    route.request().method() === "PUT"
+      ? route.fulfill({ status: 500, json: { error: "Apply bounds failed" } })
+      : route.continue(),
+  );
+  await page.locator("#hill-publish-apply").click();
+  await expect(page.locator("#hill-publish-status")).toContainText(
+    "Apply bounds failed",
+  );
+  expect((await active(request)).entries).toEqual(before.entries);
+  await expect(
+    page.locator('[data-analysis-entry="copied-1"] td').nth(1),
+  ).toHaveText("1:58");
+  await page.unroute("**/api/comparisons");
+  await page.locator("#hill-publish-apply").click();
+  await expect(page.locator("#hill-publish-status")).toContainText(
+    "Hill bounds applied",
+  );
+  const applied = await active(request);
+  expect(applied.entries.map((e) => e.id)).toEqual(
+    before.entries.map((e) => e.id),
+  );
+  expect(applied.baseline).toBe(before.baseline);
+  expect(applied.road).toEqual(before.road);
+  expect(
+    (await workspace(request)).items.find((item) => item.id === other.id),
+  ).toEqual(otherBefore);
+  const pass = applied.entries.find((e) => e.id === "copied-1");
+  expect(pass.start).toBe(10);
+  expect(pass.end).toBe(65);
+  expect(pass.kind).toBe("effort");
+  expect(applied.sections.find((s) => s.id === "section-1")).toMatchObject({
+    start: 10,
+    end: 65,
+  });
+  await expect(
+    page.locator('[data-analysis-entry="copied-1"] td').nth(1),
+  ).toHaveText("1:50");
+  await expect(page.locator('[data-analysis-entry="copied-1"]')).toContainText(
+    "0.34 mi",
+  );
+  await expect(
+    page.locator('[data-analysis-entry="copied-1"] td').nth(5),
+  ).toContainText("138");
+  await expect(page.locator('[data-estimated-average="copied-1"]')).toHaveText(
+    "245 W",
+  );
+  expect(
+    await page
+      .locator('[data-plot-line="copied-1"]')
+      .evaluate((path) => path.getBBox().height),
+  ).toBeLessThan(0.01);
+  expect(
+    (await (await request.get("/api/rides/crest-review-1")).json()).points,
+  ).toEqual(sourceBeforeApply);
+  await expect(
+    page.locator('[data-windowed-average="copied-1"]'),
+  ).toContainText("245 W");
+  await expect(page.locator("#hill-apply-controls")).toBeHidden();
+  expect((await catalog(request)).library).toEqual(updated);
+  await page.reload();
+  await settled(page);
+  await expect(
+    page.locator('[data-analysis-entry="copied-1"] td').nth(1),
+  ).toHaveText("1:50");
+  await expect(page.locator('[data-estimated-average="copied-1"]')).toHaveText(
+    "245 W",
+  );
   // Opening the real library handoff creates new entry IDs without losing this link.
   await page.locator("#hills-tab").click();
   await page.locator("#hill-summary-select").selectOption("crest-hill");
@@ -447,7 +700,13 @@ test("Hills calculation exclusions never omit passes from handoff; colours and m
   await settled(page);
   await page.locator("#comparison-hill-editor > summary").click();
   await page.locator("#hill-publish-target").selectOption("shared");
+  await expect(page.locator("[data-hill-membership]")).toHaveText(
+    Array(3).fill("In Shared hill · alignment review needed"),
+  );
   await reviewSelected(page);
+  await expect(page.locator("[data-hill-membership]")).toHaveText(
+    Array(3).fill("In Shared hill · alignment reviewed · not saved yet"),
+  );
   await page.locator("#hill-publish-save").click();
   await expect(page.locator("#hill-publish-status")).toContainText(
     "Hill saved",
@@ -455,6 +714,9 @@ test("Hills calculation exclusions never omit passes from handoff; colours and m
   expect(
     (await catalog(request)).library.groups[0].observationIds,
   ).toHaveLength(3);
+  await expect(page.locator("[data-hill-membership]")).toHaveText(
+    Array(3).fill("In Shared hill · saved alignment"),
+  );
   await page.locator("#hills-tab").click();
   await expect(page.locator("#hill-summary-status")).toContainText(
     "3 of 3 included sections mapped",
@@ -462,40 +724,34 @@ test("Hills calculation exclusions never omit passes from handoff; colours and m
   await expect(
     page.locator("#hill-summary-profile [data-summary-fill]").first(),
   ).toBeVisible();
-  await expect(page.locator("[data-feature-y-tick]")).toHaveCount(3);
+  await expect(page.locator('[data-feature-y-tick="hr"]')).toHaveCount(3);
   await expect(page.locator("#hill-summary-profile")).toContainText(
     "Mapped hill progress (%)",
   );
   await expect(
     page.locator("#hill-route-svg, #hill-open-passes, #hill-profile-reference"),
   ).toHaveCount(0);
-  await page.locator("#hill-summary-metric").selectOption("power");
-  await expect(page.locator("#hill-summary-profile")).toContainText(
-    "Measured power not recorded",
+  await expect(page.locator('[data-summary-row="power"]')).toHaveCount(0);
+  const gradeColours = await page
+    .locator("[data-summary-position]")
+    .evaluateAll((es) => es.map((e) => e.getAttribute("stop-color")));
+  expect(gradeColours.some((colour) => colour !== "#bec8d0")).toBeTruthy();
+  await page.locator('[data-summary-toggle="hr"]').click();
+  await expect(page.locator('[data-summary-row="hr"]')).toHaveCount(0);
+  await expect(page.locator('[data-summary-toggle="hr"]')).toHaveAttribute(
+    "aria-expanded",
+    "false",
   );
-  await expect(page.locator("[data-feature-y-tick]")).toHaveCount(0);
   expect(
     await page
       .locator("[data-summary-position]")
-      .evaluateAll((els) => [
-        ...new Set(els.map((e) => e.getAttribute("stop-color"))),
-      ]),
-  ).toEqual(["#bec8d0"]);
+      .evaluateAll((es) => es.map((e) => e.getAttribute("stop-color"))),
+  ).toEqual(gradeColours);
+  await page.locator('[data-summary-toggle="hr"]').click();
+  await expect(page.locator('[data-summary-row="hr"]')).toHaveCount(1);
   expect(
-    await page
-      .locator("[data-summary-fill]")
-      .evaluateAll((els) => [
-        ...new Set(els.map((e) => e.getAttribute("opacity"))),
-      ]),
-  ).toEqual([".85"]);
-  await page.locator("#hill-summary-metric").selectOption("hr");
-  await expect(page.locator("#hill-summary-value")).toContainText("blue →");
-  expect(
-    await page
-      .locator("[data-summary-position]")
-      .first()
-      .getAttribute("stop-color"),
-  ).toMatch(/^rgb\(/);
+    await page.locator("[data-summary-fill]").getAttribute("opacity"),
+  ).toBe(".85");
   await page.locator("#hill-summary-axis").selectOption("distance");
   await expect(page.locator("#hill-summary-profile")).toContainText(
     "Mapped distance (mi)",
@@ -573,6 +829,274 @@ test("Hills calculation exclusions never omit passes from handoff; colours and m
   expect(errors).toEqual([]);
   expect(external).toEqual([]);
 });
+test("hill charts fit heart-rate axes and switch range, SD and box plots without changing membership", async ({
+  page,
+  request,
+}) => {
+  const original = await (await request.get("/api/rides/demo-0")).json(),
+    rides = [170, 172, 174, 176, 190].map((hr, run) => ({
+      ...original,
+      id: `distribution-${run}`,
+      name: `Distribution ride ${run}`,
+      points: Array.from({ length: 101 }, (_, i) => ({
+        ...original.points[0],
+        t: Date.UTC(2026, 9, 10 + run) + i * 2000,
+        d: i * 10,
+        lat: 45 + (i * 10) / 111195,
+        lon: -72,
+        ele: 100 + i,
+        hr,
+        speed: 5,
+        cad: 80,
+        power: null,
+      })),
+    })),
+    observations = rides.flatMap((r) =>
+      [0, 1].map((hill) => ({
+        id: `saved-${r.id}-${hill}`,
+        rideId: r.id,
+        start: 10 + hill * 40,
+        end: 50 + hill * 40,
+        name: `Hill ${hill}`,
+      })),
+    ),
+    library = {
+      groups: [0, 1].map((hill) => ({
+        id: `distribution-hill-${hill}`,
+        name: `Distribution hill ${hill}`,
+        observationIds: observations
+          .filter((o) => o.name === `Hill ${hill}`)
+          .map((o) => o.id),
+      })),
+      observations,
+    };
+  expect(
+    (
+      await request.post("/api/restore", {
+        data: {
+          schemaVersion: 1,
+          rides,
+          segments: [],
+          settings: { riderMassKg: 80, bikeMassKg: 20 },
+        },
+      })
+    ).ok(),
+  ).toBeTruthy();
+  await put(request, "/api/hills", library);
+  await page.goto("/");
+  await settled(page);
+  await page.locator("#hills-tab").click();
+  await expect(page.locator('[data-feature-y-tick="hr"]')).toHaveText([
+    "165",
+    "180",
+    "195",
+  ]);
+  await page.locator("#hill-summary-spread").selectOption("sd");
+  await expect(page.locator("#hill-summary-spread-description")).toContainText(
+    "sample standard deviation of ride means",
+  );
+  await expect(page.locator('[data-spread-band="hr"]')).toHaveCount(160);
+  const hover = async (id) => {
+    await page.locator(id).scrollIntoViewIfNeeded();
+    const box = await page.locator(id).boundingBox();
+    await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.8);
+  };
+  await hover('#hill-summary-profile [data-summary-row="hr"]');
+  await expect(page.locator("#hill-summary-value")).toContainText("SD 7.9 bpm");
+  await page.locator("#hill-summary-spread").selectOption("box");
+  await expect(page.locator('[data-spread-box="hr"]')).toHaveCount(20);
+  await page.locator("#hill-summary-density").selectOption("40");
+  await expect(page.locator('[data-spread-box="hr"]')).toHaveCount(40);
+  await page.locator("#hill-summary-density").selectOption("80");
+  await expect(page.locator('[data-spread-box="hr"]')).toHaveCount(80);
+  const checkSpacing = async (selector, count) => {
+    const xs = await page
+      .locator(selector)
+      .evaluateAll((es) =>
+        es.map((e) => +e.getAttribute("x") + +e.getAttribute("width") / 2),
+      );
+    expect(xs).toHaveLength(count);
+    const step = (xs.at(-1) - xs[0]) / (count - 1);
+    expect(step).toBeGreaterThan(0);
+    expect(
+      xs.slice(1).every((x, i) => Math.abs(x - xs[i] - step) < 1e-7),
+    ).toBeTruthy();
+  };
+  for (const count of [10, 20, 40, 80]) {
+    await page.locator("#hill-summary-density").selectOption(String(count));
+    await checkSpacing('[data-spread-box="hr"] rect', count);
+    await checkSpacing('[data-spread-box="ele"] rect', count);
+  }
+  await page
+    .locator("#hill-summary-profile")
+    .screenshot({ path: "test-results/hr-summary-even-spacing.png" });
+  await page.locator("#hill-summary-density").selectOption("10");
+  await expect(page.locator('[data-spread-box="hr"]')).toHaveCount(10);
+  await expect(
+    page.locator('[data-spread-box="hr"] [data-spread-outlier]'),
+  ).toHaveCount(0);
+  await expect(
+    page.locator('[data-spread-box="hr"] [data-box-whisker]').first(),
+  ).toHaveAttribute("d", /,589 V529 /);
+  await expect(page.locator("#hill-summary-spread-description")).toContainText(
+    "minimum and maximum of all included ride means",
+  );
+  await hover('#hill-summary-profile [data-summary-row="hr"]');
+  await expect(page.locator("#hill-summary-value")).toContainText(
+    "median 174.0 bpm · middle 50% 172.0–176.0 bpm",
+  );
+  await expect(page.locator("#hill-summary-value")).toContainText(
+    "min–max 170.0–190.0 bpm",
+  );
+  const geometry = await page
+    .locator('[data-spread-box="hr"] rect')
+    .evaluateAll((es) =>
+      es.map((e) => ({
+        y: +e.getAttribute("y"),
+        h: +e.getAttribute("height"),
+      })),
+    );
+  expect(
+    geometry.every((r) => r.h > 0 && r.y >= 514 && r.y + r.h <= 605),
+  ).toBeTruthy();
+  await page.locator("#hill-summary-axis").selectOption("distance");
+  await expect(page.locator("#hill-summary-profile")).toContainText(
+    "Mapped distance (mi)",
+  );
+  await page.locator("#hill-summary-recordings > summary").click();
+  for (let i = 1; i < 5; i++)
+    await page.locator("[data-summary-member]").nth(i).uncheck();
+  await expect(page.locator("#hill-summary-recording-count")).toHaveText(
+    "(1/5)",
+  );
+  await expect(page.locator('[data-spread-box="hr"]')).toHaveCount(0);
+  await page.locator("#hill-summary-spread").selectOption("sd");
+  await expect(page.locator('[data-spread-band="hr"]')).toHaveCount(0);
+  await hover('#hill-summary-profile [data-summary-row="hr"]');
+  await expect(page.locator("#hill-summary-value")).toContainText(
+    "SD unavailable (needs 2 rides)",
+  );
+  await page.locator("#hill-summary-all").click();
+  await expect(page.locator('[data-summary-row="power"]')).toHaveCount(0);
+  await expect(page.locator('[data-spread-band="power"]')).toHaveCount(0);
+  await page.locator("#hill-summary-spread").selectOption("box");
+  await page
+    .locator("#hill-summary-profile")
+    .screenshot({ path: "test-results/hr-summary-box.png" });
+  await page.locator("#hill-terrain-explorer > summary").click();
+  await page.locator("#hill-select-shown").click();
+  await page.locator("#hill-create-comparison").click();
+  await expect(page.locator("#hill-cross-metric")).toHaveCount(0);
+  const rowKeys = await page
+    .locator("[data-cross-row]")
+    .evaluateAll((rows) => rows.map((row) => row.dataset.crossRow));
+  expect(rowKeys).toEqual([
+    "ele",
+    "grade",
+    "speed",
+    "hr",
+    "cad",
+    "minimumPower",
+  ]);
+  const layout = await page.locator("[data-cross-row]").evaluateAll((rows) =>
+    rows.map((row) => {
+      const b = row.getBBox();
+      return { top: b.y, bottom: b.y + b.height };
+    }),
+  );
+  expect(
+    layout.slice(1).every((row, i) => row.top > layout[i].bottom),
+  ).toBeTruthy();
+  await hover('#hill-cross-profile [data-cross-row="minimumPower"]');
+  await expect(page.locator("#hill-cross-value")).toContainText("490.3 W");
+  await expect(page.locator("#hill-cross-power-note")).toContainText(
+    "not measured crank power",
+  );
+  const expandedHeight = await page
+    .locator("#hill-cross-profile")
+    .evaluate((svg) => svg.viewBox.baseVal.height);
+  await page.locator('[data-cross-toggle="cad"]').click();
+  await expect(page.locator('[data-cross-row="cad"]')).toHaveCount(0);
+  await expect(page.locator('[data-cross-toggle="cad"]')).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+  expect(
+    await page
+      .locator("#hill-cross-profile")
+      .evaluate((svg) => svg.viewBox.baseVal.height),
+  ).toBeLessThan(expandedHeight);
+  await page.locator('[data-cross-toggle="cad"]').click();
+
+  await page.locator("#settings-button").click();
+  await page.locator("#units").selectOption("metric");
+  await page.locator('[data-close="settings"]').click();
+  await expect(page.locator('[data-cross-row="speed"]')).toContainText("km/h");
+  await page.locator("#settings-button").click();
+  await page.locator("#units").selectOption("imperial");
+  await page.locator('[data-close="settings"]').click();
+  await expect(page.locator('[data-cross-row="speed"]')).toContainText("mph");
+
+  await expect(page.locator('[data-cross-y-tick="hr"]')).toHaveText([
+    "165",
+    "180",
+    "195",
+  ]);
+  await page.locator("#hill-cross-spread").selectOption("sd");
+  await expect(
+    page.locator('#hill-cross-profile [data-spread-band="hr"]'),
+  ).toHaveCount(320);
+  await hover('#hill-cross-profile [data-cross-row="hr"]');
+  await expect(page.locator("#hill-cross-value")).toContainText("SD 7.9 bpm");
+  await page.locator("#hill-cross-spread").selectOption("box");
+  await expect(
+    page.locator('#hill-cross-profile [data-spread-box="hr"]'),
+  ).toHaveCount(40);
+  await page.locator("#hill-cross-density").selectOption("80");
+  await expect(
+    page.locator('#hill-cross-profile [data-spread-box="hr"]'),
+  ).toHaveCount(160);
+  for (const count of [10, 20, 40, 80]) {
+    await page.locator("#hill-cross-density").selectOption(String(count));
+    const boxes = page.locator('#hill-cross-profile [data-spread-box="hr"]');
+    await expect(boxes).toHaveCount(count * 2);
+    const first = await boxes.evaluateAll(
+      (es, count) =>
+        es
+          .slice(0, count)
+          .map((e) => +e.querySelector("rect").getAttribute("x")),
+      count,
+    );
+    const step = (first.at(-1) - first[0]) / (count - 1);
+    expect(
+      first.slice(1).every((x, i) => Math.abs(x - first[i] - step) < 1e-7),
+    ).toBeTruthy();
+  }
+  await page
+    .locator("#hill-cross-profile")
+    .screenshot({ path: "test-results/hr-cross-dense.png" });
+  await page.locator("#hill-cross-density").selectOption("10");
+  await expect(
+    page.locator('#hill-cross-profile [data-spread-box="hr"]'),
+  ).toHaveCount(20);
+  await page.locator("#hill-cross-axis").selectOption("progress");
+  await page
+    .locator("#hill-cross-profile")
+    .screenshot({ path: "test-results/hr-cross-box.png" });
+  for (const width of [800, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await expect(
+      page.locator('#hill-cross-profile [data-spread-box="hr"]'),
+    ).toHaveCount(20);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth + 1,
+      ),
+    ).toBeTruthy();
+  }
+  expect((await catalog(request)).library).toEqual(library);
+});
+
 test("bulk selection compares named hills inline without creating or modifying a comparison", async ({
   page,
   request,
@@ -655,7 +1179,6 @@ test("bulk selection compares named hills inline without creating or modifying a
   await expect(page.locator("#hill-cross-legend")).toContainText("Hill 0");
   await expect(page.locator("#hill-cross-legend")).toContainText("Hill 1");
   expect(await workspace(request)).toEqual(before);
-  await page.locator("#hill-cross-metric").selectOption("hr");
   await expect(page.locator('[data-cross-lane="hr"]')).toHaveCount(2);
   await page.locator("#hill-cross-axis").selectOption("progress");
   await expect(page.locator("#hill-cross-profile")).toContainText(
@@ -663,6 +1186,12 @@ test("bulk selection compares named hills inline without creating or modifying a
   );
   for (const width of [1440, 800, 390, 1440]) {
     await page.setViewportSize({ width, height: 1000 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth + 1,
+      ),
+    ).toBeTruthy();
+
     await page.locator("#hill-cross-profile").scrollIntoViewIfNeeded();
     const box = await page.locator("#hill-cross-profile").boundingBox();
     await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
@@ -753,6 +1282,12 @@ test("independent legacy effort comparisons retain raw elapsed differences and s
     ).toContainText(text);
   }
   await expect.poll(async () => (await active(request)).axis).toBe("ascent");
+  await page.locator("#metric").selectOption("hr");
+  const hrTicks = await page
+    .locator('#comparison-chart svg text[text-anchor="end"]')
+    .allTextContents();
+  expect(Math.min(...hrTicks.map(Number))).toBeGreaterThan(100);
+  await page.locator("#metric").selectOption("speed");
   await page.reload();
   await settled(page);
   await expect(page.locator("#effort-axis")).toHaveValue("ascent");

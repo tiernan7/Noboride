@@ -432,6 +432,9 @@ a {
 }
 button:disabled {
   opacity: 0.45;
+  cursor: not-allowed;
+}
+button:disabled[aria-busy="true"] {
   cursor: wait;
 }
 button:focus-visible,
@@ -1256,6 +1259,86 @@ td.strong {
   flex-wrap: wrap;
   gap: 9px 18px;
   margin-top: 13px;
+}
+.plot-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  margin-top: 12px;
+}
+.legend .plot-entry {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.plot-entry input {
+  width: auto;
+}
+.plot-entry small {
+  display: block;
+}
+.legend .plot-swatch {
+  width: 44px;
+  height: 14px;
+  flex: 0 0 44px;
+}
+.plot-entry.plot-highlighted {
+  background: #edf5ff;
+  border-radius: 4px;
+  outline: 2px solid #b8cce4;
+}
+.plot-date-key::before {
+  content: "";
+  display: block;
+  height: 10px;
+  background: var(--plot-date-gradient);
+  border-radius: 5px;
+}
+.gravity-power {
+  margin: 16px 0;
+  padding: 12px;
+  border: 1px solid #dce5ee;
+  border-radius: 8px;
+}
+.gravity-power summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.gravity-power [data-mass-unit] {
+  display: inline;
+}
+.gravity-power label {
+  display: block;
+}
+.gravity-power input {
+  display: block;
+  margin-top: 6px;
+  max-width: 180px;
+}
+#mechanical-profile {
+  width: 100%;
+  height: auto;
+  display: block;
+  margin-top: 12px;
+}
+#mechanical-profile text {
+  font-size: 11px;
+  fill: #61758c;
+}
+#gravity-profile .plot-controls label {
+  min-width: 0;
+  max-width: 100%;
+}
+#gravity-profile select {
+  max-width: 100%;
+}
+#mechanical-window {
+  max-width: 230px;
 }
 .legend > span {
   font-size: 10px;

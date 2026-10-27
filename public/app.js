@@ -16,6 +16,14 @@ import { createComparisonWorkspace } from "/workspace.js";
 import { createRideStory } from "/ride-story.js";
 import { createHillLibrary } from "/hills.js";
 import { effortTrace, sectionCandidates } from "/comparisons.mjs";
+import { hillChartDomain, datePlotColor, dateGradient } from "/hill-chart.js";
+import {
+  gravityOnlyPower,
+  minimumInputProfile,
+  validateGravityMasses,
+  validatePowerErrors,
+} from "/gravity-power.mjs";
+import { createGravityProfile } from "/gravity-profile.js";
 const $ = (id) => document.getElementById(id),
   esc = (v) =>
     String(v ?? "").replace(
@@ -41,6 +49,8 @@ const state = {
   metric: "ele",
   matches: [],
   stats: new Map(),
+  energyEstimates: new Map(),
+  energyProfiles: new Map(),
   budgets: new Map(),
   canonical: [],
   busy: false,
@@ -52,6 +62,7 @@ const loaded = new Map(),
 let comparisonWorkspace,
   rideStory,
   hillLibrary,
+  mechanicalProfile,
   rideRename = null;
 let settingsTimeout;
 const ref = () => loaded.get(state.referenceId),
@@ -94,9 +105,108 @@ const color = (id) =>
       included().findIndex((r) => r.id === id),
     ) % PALETTE.length
   ];
+let plotSaving = false;
+const plot = () =>
+  comparisonWorkspace.active()?.plot || { colorMode: "pass", hidden: [] };
+const plotMatches = () =>
+  state.matches.filter((m) => !plot().hidden.includes(m.id));
+const plotDate = (m) =>
+  new Date(
+    loaded.get(m.rideId)?.date ?? loaded.get(m.rideId)?.points[0]?.t,
+  ).getTime();
+function plotColor(m) {
+  if (plot().colorMode !== "pass") {
+    const dates = state.matches.map(plotDate).filter(Number.isFinite),
+      low = Math.min(...dates),
+      high = Math.max(...dates),
+      value = plotDate(m);
+    if (!Number.isFinite(value)) return "#687b8d";
+    const f = high > low ? (value - low) / (high - low) : 0.5;
+    return datePlotColor(f, plot().colorMode === "date-gray" ? "gray" : "blue");
+  }
+  const index = comparisonWorkspace
+    .active()
+    .entries.findIndex((e) => e.id === m.id);
+  return index < PALETTE.length
+    ? PALETTE[index]
+    : `hsl(${(210 + index * 137.508) % 360} 66% 40%)`;
+}
+function renderPlotLegend() {
+  $("plot-colors").value = plot().colorMode;
+  for (const id of ["plot-colors", "plot-all", "plot-none"])
+    $(id).disabled = plotSaving;
+  const dates = state.matches.map(plotDate).filter(Number.isFinite);
+  $("plot-date-key").hidden = plot().colorMode === "pass";
+  $("plot-date-key").style.setProperty(
+    "--plot-date-gradient",
+    dateGradient(plot().colorMode === "date-gray" ? "gray" : "blue"),
+  );
+  $("plot-date-key").textContent = dates.length
+    ? `Oldest ${date(Math.min(...dates))} → Newest ${date(Math.max(...dates))}`
+    : "Dates unavailable";
+  const hiddenBaseline = plot().hidden.includes(state.baseline);
+  $("plot-visibility").textContent =
+    `${plotMatches().length} of ${state.matches.length} passes plotted. Use the checkboxes below to show a subset; table and CSV inclusion stay unchanged.${hiddenBaseline ? " The baseline line is hidden; differences still use that baseline." : ""}${plot().colorMode !== "pass" ? " Equal dates share a color; pass labels and highlighting identify individual curves." : ""} Hover or focus a legend item to highlight its curve.`;
+  $("legend").innerHTML = state.matches
+    .map(
+      (m) =>
+        `<label class="plot-entry" data-plot-key="${esc(m.id)}"><input type="checkbox" data-plot-entry="${esc(m.id)}" ${plot().hidden.includes(m.id) ? "" : "checked"} ${plotSaving ? "disabled" : ""}><svg class="plot-swatch" viewBox="0 0 48 14" role="img" aria-label="Solid line"><line x1="1" x2="47" y1="7" y2="7" stroke="${plotColor(m)}" stroke-width="${m.id === state.baseline ? 3 : 2.2}" stroke-dasharray=""/></svg><span>${esc(rideName(m.rideId))} · pass ${m.pass}${m.id === state.baseline ? " · baseline" : ""}${plot().colorMode !== "pass" ? ` · ${Number.isFinite(plotDate(m)) ? esc(date(plotDate(m))) : "Date unavailable"}` : ""}<small data-plot-value="${esc(m.id)}"></small></span></label>`,
+    )
+    .join("");
+}
+function highlightPlot(id) {
+  const lines = [...$("comparison-chart").querySelectorAll("[data-plot-line]")];
+  if (!lines.some((line) => line.dataset.plotLine === id)) id = null;
+  for (const line of lines) {
+    const selected = line.dataset.plotLine === id;
+    line.style.opacity = id && !selected ? "0.18" : "1";
+    line.style.strokeWidth = selected
+      ? String(+line.getAttribute("stroke-width") + 1.5)
+      : "";
+  }
+  for (const label of $("legend").querySelectorAll("[data-plot-key]"))
+    label.classList.toggle("plot-highlighted", label.dataset.plotKey === id);
+}
+function plotValues(read) {
+  for (const value of $("legend").querySelectorAll("[data-plot-value]"))
+    value.textContent = read(value.dataset.plotValue) || "";
+}
+async function changePlot(update) {
+  if (plotSaving) return;
+  const c = comparisonWorkspace.active(),
+    previous = structuredClone(c.plot),
+    focusId = document.activeElement?.dataset.plotEntry;
+  plotSaving = true;
+  c.plot ||= { colorMode: "pass", hidden: [] };
+  update(c.plot);
+  renderComparison();
+  try {
+    await comparisonWorkspace.save();
+  } catch (error) {
+    c.plot = previous;
+    message(error.message, true);
+  } finally {
+    plotSaving = false;
+    renderComparison();
+    if (focusId)
+      [...$("legend").querySelectorAll("[data-plot-entry]")]
+        .find((input) => input.dataset.plotEntry === focusId)
+        ?.focus({ preventScroll: true });
+  }
+}
 async function api(path, options) {
-  const r = await fetch(path, options),
-    v = await r.json();
+  let r;
+  try {
+    r = await fetch(path, options);
+  } catch (cause) {
+    const error = new Error(
+      "Cannot reach Noboride’s local server. Check that Noboride is still running on your computer and that this device can connect, then try again.",
+      { cause },
+    );
+    error.name = "NetworkError";
+    throw error;
+  }
+  const v = await r.json();
   if (!r.ok) throw new Error(v.error || "Request failed.");
   return v;
 }
@@ -197,6 +307,20 @@ function compute() {
   state.stats = new Map(
     state.matches.map((m) => [m.id, summarize(m.points, state.settings)]),
   );
+  const energyElevation = powerElevation();
+  state.energyProfiles = new Map(
+    state.matches.map((m) => [
+      m.id,
+      minimumInputProfile(
+        m.points,
+        state.settings,
+        energyElevation || m.points,
+      ),
+    ]),
+  );
+  state.energyEstimates = new Map(
+    [...state.energyProfiles].map(([id, result]) => [id, result.summary]),
+  );
   state.budgets = new Map(
     comparisonWorkspace.active()?.mode === "terrain"
       ? []
@@ -249,6 +373,7 @@ function render() {
     $("summary").textContent =
       "Include a source ride, select a stretch, and add it to this comparison.";
   renderMatches();
+  renderGravityPower();
   renderComparison();
   renderBudget();
   renderContext();
@@ -634,12 +759,14 @@ function renderMatches() {
   $("include-baseline-ride").hidden = !excludedBaseline;
   $("export").disabled = !state.matches.length;
   $("matches").innerHTML = state.matches.length
-    ? `<table><thead><tr><th>Ride / pass</th><th>Elapsed</th><th>${terrain ? "Δ elapsed" : "Δ baseline"}</th><th>Moving est.</th><th>Avg speed</th><th>Avg HR</th><th>Cadence</th><th>${terrain ? "Peak grade" : "GPS offsets"}</th><th></th></tr></thead><tbody>${state.matches
+    ? `<table><thead><tr><th>Ride / pass</th><th>Elapsed</th><th>${terrain ? "Δ elapsed" : "Δ baseline"}</th><th>Moving est.</th><th>Avg speed</th><th>Avg HR</th><th>Cadence</th><th title="Time-weighted average of the local minimum-power curve; partial coverage is labelled">Est. min. avg power</th><th>${terrain ? "Peak grade" : "GPS offsets"}</th><th></th></tr></thead><tbody>${state.matches
         .map((m) => {
           const s = state.stats.get(m.id),
+            estimate = state.energyEstimates.get(m.id),
+            average = state.energyProfiles.get(m.id).average,
             base = m.id === b?.id,
             delta = b ? s.elapsed - state.stats.get(b.id).elapsed : null;
-          return `<tr class="${base ? "baseline" : ""}"><td><strong class="table-ride"><i style="background:${color(m.rideId)}"></i>${esc(rideName(m.rideId))}</strong><small>Pass ${m.pass} · ${dist(s.distance)}${m.manual ? " · manual" : ""}${base ? " · baseline" : ""}</small></td><td class="strong">${fmtTime(s.elapsed)}</td><td class="${b && !base && delta < 0 ? "positive" : ""}">${!b || base ? "—" : fmtTime(delta, true)}${terrain ? `<small>${elev(s.grade == null ? null : (s.grade * s.distance) / 100)} gain · ${num(s.grade, 1)}%</small>` : ""}</td><td>${fmtTime(s.moving)}</td><td>${spd(s.speed)} <small>${spdUnit()}</small></td><td>${num(s.hr)} <small>bpm</small></td><td>${num(s.cadence)} <small>rpm</small></td><td title="${terrain ? "Independent terrain effort" : m.manual ? "Manual selection: automatic road checks bypassed" : `Max ordered-route offset: ${num(m.routeError, 1)}m${m.gpsBridgeSeconds ? `; GPS gap bridged for geometry checks: ${num(m.gpsBridgeSeconds)} seconds` : ""}`}">${terrain ? `${num(s.maxGrade, 1)}% over ${state.settings.gradeWindow} m` : m.manual ? "Manual" : `${Math.round(m.startMiss)} / ${Math.round(m.endMiss)} m`}${!m.manual && m.gpsBridgeSeconds ? `<small>GPS gap: ${num(m.gpsBridgeSeconds)} s</small>` : ""}</td><td><button class="text-button" data-entry-edit="${esc(m.id)}">Edit</button></td></tr>`;
+          return `<tr data-analysis-entry="${esc(m.id)}" class="${base ? "baseline" : ""}"><td><strong class="table-ride"><i style="background:${color(m.rideId)}"></i>${esc(rideName(m.rideId))}</strong><small>Pass ${m.pass} · ${dist(s.distance)}${m.manual ? " · manual" : ""}${base ? " · baseline" : ""}</small></td><td class="strong">${fmtTime(s.elapsed)}</td><td class="${b && !base && delta < 0 ? "positive" : ""}">${!b || base ? "—" : fmtTime(delta, true)}${terrain ? `<small>${elev(s.grade == null ? null : (s.grade * s.distance) / 100)} gain · ${num(s.grade, 1)}%</small>` : ""}</td><td>${fmtTime(s.moving)}</td><td>${spd(s.speed)} <small>${spdUnit()}</small></td><td>${num(s.hr)} <small>bpm</small></td><td>${num(s.cadence)} <small>rpm</small></td><td data-estimated-average="${esc(m.id)}" title="${esc(average?.watts == null ? estimate.reason || "No supported local power windows" : "Time-weighted windowed minimum estimate; resistance omitted, actual pedalling power may be higher.")}">${average?.watts == null ? "—" : `${Math.round(average.watts)} W`}${average?.watts != null && average.coverage < 0.999 ? `<small>Partial · ${(average.coverage * 100).toFixed(1)}% time</small>` : average?.watts == null ? `<small>${estimate.massKg == null ? "Enter weights" : "Unavailable"}</small>` : ""}</td><td title="${terrain ? "Independent terrain effort" : m.manual ? "Manual selection: automatic road checks bypassed" : `Max ordered-route offset: ${num(m.routeError, 1)}m${m.gpsBridgeSeconds ? `; GPS gap bridged for geometry checks: ${num(m.gpsBridgeSeconds)} seconds` : ""}`}">${terrain ? `${num(s.maxGrade, 1)}% over ${state.settings.gradeWindow} m` : m.manual ? "Manual" : `${Math.round(m.startMiss)} / ${Math.round(m.endMiss)} m`}${!m.manual && m.gpsBridgeSeconds ? `<small>GPS gap: ${num(m.gpsBridgeSeconds)} s</small>` : ""}</td><td><button class="text-button" data-entry-edit="${esc(m.id)}">Edit</button></td></tr>`;
         })
         .join("")}</tbody></table>`
     : comparisonWorkspace.active()?.entries.length
@@ -649,7 +776,111 @@ function renderMatches() {
     `Moving time is estimated above ${spd(state.settings.movingThreshold)} ${spdUnit()}, excluding known pauses and recording gaps. It may differ from Garmin. HR/cadence/power averages are time-weighted; absent sensors stay blank.`;
   $("unmatched").innerHTML = "";
 }
+function gravityEstimate(match) {
+  const common =
+    comparisonWorkspace.active()?.mode !== "terrain" &&
+    !comparisonWorkspace.hasEfforts() &&
+    comparisonWorkspace.roadPoints();
+  return {
+    ...gravityOnlyPower(match.points, state.settings, common || match.points),
+    basis: common ? "Shared road reference" : "This pass’s recorded elevation",
+  };
+}
+function powerElevation() {
+  return comparisonWorkspace.active()?.mode !== "terrain" &&
+    !comparisonWorkspace.hasEfforts()
+    ? comparisonWorkspace.roadPoints()
+    : null;
+}
+function renderGravityPower() {
+  const factor = unit() === "imperial" ? 1 / 0.45359237 : 1;
+  for (const [id, key] of [
+    ["gravity-rider", "riderMassKg"],
+    ["gravity-bike", "bikeMassKg"],
+  ]) {
+    if (document.activeElement !== $(id))
+      $(id).value =
+        state.settings[key] == null
+          ? ""
+          : +(state.settings[key] * factor).toFixed(6);
+  }
+  for (const label of document.querySelectorAll("[data-mass-unit]"))
+    label.textContent = unit() === "imperial" ? "lb" : "kg";
+  for (const [id, key, conversion] of [
+    [
+      "power-height-error",
+      "powerHeightErrorM",
+      unit() === "imperial" ? 3.28084 : 1,
+    ],
+    [
+      "power-speed-error",
+      "powerSpeedErrorMps",
+      unit() === "imperial" ? 2.236936 : 1,
+    ],
+  ]) {
+    if (document.activeElement !== $(id))
+      $(id).value =
+        state.settings[key] == null
+          ? ""
+          : +(state.settings[key] * conversion).toFixed(6);
+  }
+  $("power-height-unit").textContent = unit() === "imperial" ? "ft" : "m";
+  $("power-speed-unit").textContent = unit() === "imperial" ? "mph" : "m/s";
+  const common =
+    comparisonWorkspace.active()?.mode !== "terrain" &&
+    !comparisonWorkspace.hasEfforts() &&
+    comparisonWorkspace.roadPoints();
+  $("gravity-basis").textContent =
+    `${common ? `Height gain uses the shared road reference (${rideName(comparisonWorkspace.active().road.rideId)}) for every verified pass.` : "Each pass uses its own recorded endpoint height difference; different boundaries and elevation errors affect comparisons."} Weights apply to every pass in this comparison and are saved with it. Blank weights disable the estimate.`;
+  $("gravity-results").innerHTML = state.matches.length
+    ? `<table><thead><tr><th>Ride / pass</th><th>Avg. windowed minimum</th><th>Whole-range net bound</th><th>Start → end speed</th><th>Total weight</th><th>Net height gain</th><th>Elapsed</th></tr></thead><tbody>${state.matches
+        .map((m) => {
+          const estimate = state.energyEstimates.get(m.id),
+            average = state.energyProfiles.get(m.id).average;
+          return `<tr data-gravity-entry="${esc(m.id)}"><td>${esc(rideName(m.rideId))} · pass ${m.pass}</td><td data-windowed-average="${esc(m.id)}">${average?.watts == null ? "Unavailable" : `${Math.round(average.watts)} W`}${average?.watts != null ? `<small>${average.coverage < 0.999 ? "Partial · " : ""}${(average.coverage * 100).toFixed(1)}% of elapsed time supported</small>` : ""}</td><td><span data-gravity-watts data-minimum-watts>${estimate.minimumWatts == null ? esc(estimate.reason) : `${Math.round(estimate.minimumWatts)} W`}</span>${estimate.minimumWatts == null ? "" : `<small>Gravity ${Math.round(estimate.gravityWatts)} W · momentum ${Math.round(estimate.kineticWatts)} W</small><small data-power-error-range>${estimate.lowerWatts == null ? "Error range unquantified" : `Assumed-error sensitivity: ${Math.round(estimate.lowerWatts)}–${Math.round(estimate.upperWatts)} W`}</small>`}</td><td>${estimate.startSpeed == null ? "—" : `${spd(estimate.startSpeed)} → ${spd(estimate.endSpeed)} ${spdUnit()}`}</td><td>${estimate.massKg == null ? "—" : `${(estimate.massKg * factor).toFixed(1)} ${unit() === "imperial" ? "lb" : "kg"}`}</td><td>${elev(estimate.netGainMeters)}</td><td>${fmtTime(estimate.elapsedSeconds)}</td></tr>`;
+        })
+        .join("")}</tbody></table>`
+    : "Add a climbing stretch to this comparison to see its estimate.";
+  mechanicalProfile?.render();
+}
+function estimatedTrace(match, axis = "progress") {
+  const result = state.energyProfiles.get(match.id);
+  const ascent =
+    axis === "ascent"
+      ? effortTrace(match.points, "ascent", state.settings.gapSeconds)
+      : null;
+  return result.rows.map((row, i) => {
+    let x =
+      axis === "progress"
+        ? row.progress
+        : axis === "elapsed"
+          ? (row.t - match.points[0].t) / 1000
+          : row.d;
+    if (ascent) {
+      const k = lowerBound(match.points, match.points[0].d + row.d),
+        a = ascent[Math.max(0, k - 1)],
+        b = ascent[k];
+      x =
+        a.x == null || b.x == null
+          ? null
+          : k === 0
+            ? b.x
+            : a.x +
+              ((b.x - a.x) * (row.t - a.point.t)) / (b.point.t - a.point.t);
+    }
+    return {
+      x,
+      y: row.minimumWatts,
+      point: row.point,
+      connected:
+        i > 0 &&
+        result.rows[i - 1].minimumWatts != null &&
+        row.minimumWatts != null,
+    };
+  });
+}
 function renderComparison() {
+  renderPlotLegend();
   const terrain = comparisonWorkspace.active()?.mode === "terrain";
   if (terrain && state.metric === "delta") state.metric = "ele";
   const metric = state.metric,
@@ -670,7 +901,6 @@ function renderComparison() {
     $("comparison-chart").textContent = state.matches.length
       ? "Choose an available baseline to show aligned overlays."
       : "";
-    $("legend").innerHTML = "";
     return;
   }
   if (terrain) return renderTerrainComparison(b, metric);
@@ -685,12 +915,12 @@ function renderComparison() {
           ? "bpm"
           : metric === "cad"
             ? "rpm"
-            : metric === "power"
+            : metric === "power" || metric === "minimumPower"
               ? "W"
               : metric === "grade"
                 ? "%"
                 : "seconds";
-  const lines = state.matches.map((m) => {
+  const lines = plotMatches().map((m) => {
     const gs =
       metric === "grade"
         ? gradeProfile(
@@ -702,31 +932,35 @@ function renderComparison() {
     return {
       m,
       values:
-        metric === "delta"
-          ? deltaCurve(m.points, b.points)
-          : Array.from({ length: 151 }, (_, i) => {
-              const f = i / 150,
-                p = atProgress(m.points, f);
-              let v =
-                metric === "grade" ? gs[lowerBound(m.points, p.d)] : p[metric];
-              if (metric === "ele")
-                v =
-                  v != null && m.points[0].ele != null
-                    ? (v - m.points[0].ele) *
-                      (unit() === "imperial" ? 3.28084 : 1)
-                    : null;
-              if (metric === "speed" && v != null)
-                v *= unit() === "imperial" ? 2.236936 : 3.6;
-              const k = lowerBound(m.points, p.d);
-              if (
-                k > 0 &&
-                (m.points[k].breakBefore ||
-                  m.points[k].t - m.points[k - 1].t >
-                    state.settings.gapSeconds * 1000)
-              )
-                v = null;
-              return { x: f, y: v };
-            }),
+        metric === "minimumPower"
+          ? estimatedTrace(m)
+          : metric === "delta"
+            ? deltaCurve(m.points, b.points)
+            : Array.from({ length: 151 }, (_, i) => {
+                const f = i / 150,
+                  p = atProgress(m.points, f);
+                let v =
+                  metric === "grade"
+                    ? gs[lowerBound(m.points, p.d)]
+                    : p[metric];
+                if (metric === "ele")
+                  v =
+                    v != null && m.points[0].ele != null
+                      ? (v - m.points[0].ele) *
+                        (unit() === "imperial" ? 3.28084 : 1)
+                      : null;
+                if (metric === "speed" && v != null)
+                  v *= unit() === "imperial" ? 2.236936 : 3.6;
+                const k = lowerBound(m.points, p.d);
+                if (
+                  k > 0 &&
+                  (m.points[k].breakBefore ||
+                    m.points[k].t - m.points[k - 1].t >
+                      state.settings.gapSeconds * 1000)
+                )
+                  v = null;
+                return { x: f, y: v };
+              }),
     };
   });
   const all = lines
@@ -735,7 +969,7 @@ function renderComparison() {
     min = all.length ? all.reduce((a, b) => Math.min(a, b), Infinity) : 0,
     max = all.length ? all.reduce((a, b) => Math.max(a, b), -Infinity) : 1,
     pad = Math.max(1, (max - min) * 0.12),
-    lo = min - pad,
+    lo = metric === "minimumPower" ? 0 : min - pad,
     hi = max + pad,
     y = (v) => CH.h - CH.b - ((v - lo) / (hi - lo)) * (CH.h - CH.b - CH.t);
   const path = (values) => {
@@ -753,16 +987,28 @@ function renderComparison() {
       .join(" ");
   };
   $("comparison-chart").innerHTML =
-    `<svg viewBox="0 0 ${CH.w} ${CH.h}" role="img" aria-label="${esc(metric)} comparison by distance progress">${[0, 0.5, 1].map((f) => `<line x1="${CH.l}" x2="${CH.w - CH.r}" y1="${y(lo + (hi - lo) * f)}" y2="${y(lo + (hi - lo) * f)}" stroke="#e4e9ee"/><text x="${CH.l - 8}" y="${y(lo + (hi - lo) * f) + 4}" text-anchor="end">${Math.round(lo + (hi - lo) * f)}</text>`).join("")}${metric === "delta" ? `<line x1="${CH.l}" x2="${CH.w - CH.r}" y1="${y(0)}" y2="${y(0)}" stroke="#8a9aac" stroke-dasharray="4 4"/>` : ""}${lines.map(({ m, values }) => `<path d="${path(values)}" fill="none" stroke="${color(m.rideId)}" stroke-width="${m.id === b.id ? 3 : 2.2}" ${m.pass > 1 ? 'stroke-dasharray="6 3"' : ""}/>`).join("")}${[0, 0.25, 0.5, 0.75, 1].map((f) => `<text x="${CH.l + f * (CH.w - CH.l - CH.r)}" y="${CH.h - 8}" text-anchor="middle">${Math.round(f * 100)}%</text>`).join("")}<line id="compare-cursor" y1="${CH.t}" y2="${CH.h - CH.b}" stroke="#172b42" opacity="0"/></svg><div class="chart-caption"><span>${esc(units)} ${metric === "delta" ? "· negative = ahead of baseline" : ""}</span><span>Distance progress between GPS endpoints</span></div>${all.length ? "" : '<p class="no-channel">This sensor channel wasn’t recorded.</p>'}`;
+    `<svg viewBox="0 0 ${CH.w} ${CH.h}" role="img" aria-label="${esc(metric)} comparison by distance progress">${[0, 0.5, 1].map((f) => `<line x1="${CH.l}" x2="${CH.w - CH.r}" y1="${y(lo + (hi - lo) * f)}" y2="${y(lo + (hi - lo) * f)}" stroke="#e4e9ee"/><text x="${CH.l - 8}" y="${y(lo + (hi - lo) * f) + 4}" text-anchor="end">${Math.round(lo + (hi - lo) * f)}</text>`).join("")}${metric === "delta" ? `<line x1="${CH.l}" x2="${CH.w - CH.r}" y1="${y(0)}" y2="${y(0)}" stroke="#8a9aac" stroke-dasharray="4 4"/>` : ""}${lines.map(({ m, values }) => `<path d="${path(values)}" fill="none" data-plot-line="${esc(m.id)}" stroke="${plotColor(m)}" stroke-width="${m.id === b.id ? 3 : 2.2}" stroke-dasharray=""/>`).join("")}${[0, 0.25, 0.5, 0.75, 1].map((f) => `<text x="${CH.l + f * (CH.w - CH.l - CH.r)}" y="${CH.h - 8}" text-anchor="middle">${Math.round(f * 100)}%</text>`).join("")}<line id="compare-cursor" y1="${CH.t}" y2="${CH.h - CH.b}" stroke="#172b42" opacity="0"/></svg><div class="chart-caption"><span>${esc(units)} ${metric === "delta" ? "· negative = ahead of baseline" : ""}</span><span>Distance progress between GPS endpoints</span></div>${!lines.length ? '<p class="no-channel">No passes selected for this plot. Use Show all passes or the checkboxes below.</p>' : all.length ? "" : metric === "minimumPower" ? '<p class="no-channel">Minimum power is unavailable. Enter weights below the table and inspect data-quality reasons in the table.</p>' : '<p class="no-channel">This sensor channel wasn’t recorded.</p>'}`;
+  if (metric === "minimumPower")
+    $("comparison-chart").insertAdjacentHTML(
+      "beforeend",
+      '<p class="data-note">Approximate minimum mechanical input · resistance losses omitted; actual pedalling power may be higher. Shared physical window: ' +
+        state.settings.gradeWindow +
+        " m. Unsupported windows remain gaps. Interior distance-progress alignment is approximate.</p>",
+    );
   state.chartData = lines;
-  const legend = (f) => {
-    $("legend").innerHTML = lines
-      .map(
-        ({ m, values }) =>
-          `<span><i style="background:${color(m.rideId)}"></i>${esc(rideName(m.rideId))}${m.pass > 1 ? " · pass " + m.pass : ""}${f != null ? ` · ${num(values[Math.round(f * (values.length - 1))]?.y, 1)} ${esc(units)}` : ""}</span>`,
-      )
-      .join("");
-  };
+  const legend = (f) =>
+    plotValues((id) => {
+      const line = lines.find((l) => l.m.id === id);
+      const sample =
+        line && f != null
+          ? line.values.reduce(
+              (best, p) =>
+                !best || Math.abs(p.x - f) < Math.abs(best.x - f) ? p : best,
+              null,
+            )
+          : null;
+      return sample ? `${num(sample.y, 1)} ${units}` : "";
+    });
   legend(null);
   const svg = $("comparison-chart").querySelector("svg");
   svg.onpointermove = (e) => {
@@ -781,7 +1027,7 @@ function renderComparison() {
     cursor.setAttribute("x2", x);
     cursor.setAttribute("opacity", ".5");
     legend(f);
-    const sourceMatch = state.matches.find(
+    const sourceMatch = plotMatches().find(
       (m) => m.rideId === state.referenceId,
     );
     mainMap.highlight(sourceMatch ? atProgress(sourceMatch.points, f) : null);
@@ -806,7 +1052,7 @@ function renderTerrainComparison(b, metric) {
           ? "bpm"
           : metric === "cad"
             ? "rpm"
-            : metric === "power"
+            : metric === "power" || metric === "minimumPower"
               ? "W"
               : "%";
   const axisLabel =
@@ -823,7 +1069,7 @@ function renderTerrainComparison(b, metric) {
       : axis === "ascent"
         ? x * (unit() === "imperial" ? 3.28084 : 1)
         : x;
-  const lines = state.matches.map((m) => {
+  const lines = plotMatches().map((m) => {
     const grades =
       metric === "grade"
         ? gradeProfile(
@@ -834,23 +1080,30 @@ function renderTerrainComparison(b, metric) {
         : null;
     return {
       m,
-      values: effortTrace(m.points, axis, state.settings.gapSeconds).map(
-        (sample) => {
-          let y = grades ? grades[sample.index] : sample.point[metric];
-          if (metric === "ele")
-            y =
-              y != null && m.points[0].ele != null
-                ? (y - m.points[0].ele) * (unit() === "imperial" ? 3.28084 : 1)
-                : null;
-          if (metric === "speed" && y != null)
-            y *= unit() === "imperial" ? 2.236936 : 3.6;
-          return {
-            ...sample,
-            x: sample.x == null ? null : xValue(sample.x),
-            y,
-          };
-        },
-      ),
+      values:
+        metric === "minimumPower"
+          ? estimatedTrace(m, axis).map((sample) => ({
+              ...sample,
+              x: sample.x == null ? null : xValue(sample.x),
+            }))
+          : effortTrace(m.points, axis, state.settings.gapSeconds).map(
+              (sample) => {
+                let y = grades ? grades[sample.index] : sample.point[metric];
+                if (metric === "ele")
+                  y =
+                    y != null && m.points[0].ele != null
+                      ? (y - m.points[0].ele) *
+                        (unit() === "imperial" ? 3.28084 : 1)
+                      : null;
+                if (metric === "speed" && y != null)
+                  y *= unit() === "imperial" ? 2.236936 : 3.6;
+                return {
+                  ...sample,
+                  x: sample.x == null ? null : xValue(sample.x),
+                  y,
+                };
+              },
+            ),
     };
   });
   const values = lines.flatMap((l) =>
@@ -869,6 +1122,16 @@ function renderTerrainComparison(b, metric) {
   const pad = Math.max(1, (hi - lo) * 0.08);
   lo -= pad;
   hi += pad;
+  if (metric === "minimumPower") lo = 0;
+  if (metric === "hr") {
+    const domain = hillChartDomain(
+      values.map((v) => ({ mean: v.y, min: v.y, max: v.y })),
+      "hr",
+      "range",
+    );
+    lo = domain.low;
+    hi = domain.high;
+  }
   const x = (v) => CH.l + (v / xMax) * (CH.w - CH.l - CH.r),
     y = (v) => CH.h - CH.b - ((v - lo) / (hi - lo)) * (CH.h - CH.b - CH.t);
   const path = (series) => {
@@ -892,27 +1155,32 @@ function renderTerrainComparison(b, metric) {
         ? fmtTime(v)
         : `${v.toFixed(axis === "distance" ? 2 : 0)} ${axis === "distance" ? (unit() === "imperial" ? "mi" : "km") : unit() === "imperial" ? "ft" : "m"}`;
   $("comparison-chart").innerHTML =
-    `<svg viewBox="0 0 ${CH.w} ${CH.h}" role="img" aria-label="${esc(metric)} across different hills by ${esc(axisLabel)}">${[0, 0.5, 1].map((f) => `<line x1="${CH.l}" x2="${CH.w - CH.r}" y1="${y(lo + (hi - lo) * f)}" y2="${y(lo + (hi - lo) * f)}" stroke="#e4e9ee"/><text x="${CH.l - 8}" y="${y(lo + (hi - lo) * f) + 4}" text-anchor="end">${num(lo + (hi - lo) * f)}</text>`).join("")}${lines.map(({ m, values }) => `<path d="${path(values)}" fill="none" stroke="${color(m.rideId)}" stroke-width="${m.id === b.id ? 3 : 2.2}" ${m.pass > 1 ? 'stroke-dasharray="6 3"' : ""}/>`).join("")}${[0, 0.25, 0.5, 0.75, 1].map((f) => `<text x="${x(f * xMax)}" y="${CH.h - 8}" text-anchor="middle">${esc(xLabel(f * xMax))}</text>`).join("")}<line id="compare-cursor" y1="${CH.t}" y2="${CH.h - CH.b}" stroke="#172b42" opacity="0"/></svg><div class="chart-caption"><span>${esc(units)}</span><span>${esc(axisLabel)}</span></div>${!values.length ? '<p class="no-channel">This channel or axis is unavailable.</p>' : ""}${axis === "ascent" ? '<p class="data-note">Raw ascent is noise sensitive. A trace stops at the first missing elevation or recording gap; no climb is invented across missing data.</p>' : ""}`;
+    `<svg viewBox="0 0 ${CH.w} ${CH.h}" role="img" aria-label="${esc(metric)} across different hills by ${esc(axisLabel)}">${[0, 0.5, 1].map((f) => `<line x1="${CH.l}" x2="${CH.w - CH.r}" y1="${y(lo + (hi - lo) * f)}" y2="${y(lo + (hi - lo) * f)}" stroke="#e4e9ee"/><text x="${CH.l - 8}" y="${y(lo + (hi - lo) * f) + 4}" text-anchor="end">${num(lo + (hi - lo) * f)}</text>`).join("")}${lines.map(({ m, values }) => `<path d="${path(values)}" fill="none" data-plot-line="${esc(m.id)}" stroke="${plotColor(m)}" stroke-width="${m.id === b.id ? 3 : 2.2}" stroke-dasharray=""/>`).join("")}${[0, 0.25, 0.5, 0.75, 1].map((f) => `<text x="${x(f * xMax)}" y="${CH.h - 8}" text-anchor="middle">${esc(xLabel(f * xMax))}</text>`).join("")}<line id="compare-cursor" y1="${CH.t}" y2="${CH.h - CH.b}" stroke="#172b42" opacity="0"/></svg><div class="chart-caption"><span>${esc(units)}</span><span>${esc(axisLabel)}</span></div>${!lines.length ? '<p class="no-channel">No passes selected for this plot. Use Show all passes or the checkboxes below.</p>' : !values.length ? '<p class="no-channel">This channel or axis is unavailable.</p>' : ""}${axis === "ascent" ? '<p class="data-note">Raw ascent is noise sensitive. A trace stops at the first missing elevation or recording gap; no climb is invented across missing data.</p>' : ""}`;
+  if (metric === "minimumPower")
+    $("comparison-chart").insertAdjacentHTML(
+      "beforeend",
+      '<p class="data-note">Approximate minimum mechanical input · resistance losses omitted; actual pedalling power may be higher. Shared physical window: ' +
+        state.settings.gradeWindow +
+        " m. Unsupported windows remain gaps. Interior distance-progress alignment is approximate.</p>",
+    );
   state.chartData = lines;
-  const legend = (value = null) => {
-    $("legend").innerHTML = lines
-      .map(({ m, values }) => {
-        const sample =
-          value == null
-            ? null
-            : values
-                .filter((v) => v.x != null)
-                .reduce(
-                  (best, v) =>
-                    !best || Math.abs(v.x - value) < Math.abs(best.x - value)
-                      ? v
-                      : best,
-                  null,
-                );
-        return `<span><i style="background:${color(m.rideId)}"></i>${esc(rideName(m.rideId))} · pass ${m.pass}${sample ? ` · ${num(sample.y, 1)} ${esc(units)}` : ""}</span>`;
-      })
-      .join("");
-  };
+  const legend = (value = null) =>
+    plotValues((id) => {
+      const line = lines.find((l) => l.m.id === id);
+      const sample =
+        line && value != null
+          ? line.values
+              .filter((v) => v.x != null)
+              .reduce(
+                (best, v) =>
+                  !best || Math.abs(v.x - value) < Math.abs(best.x - value)
+                    ? v
+                    : best,
+                null,
+              )
+          : null;
+      return sample ? `${num(sample.y, 1)} ${units}` : "";
+    });
   legend();
   const svg = $("comparison-chart").querySelector("svg");
   svg.onpointermove = (event) => {
@@ -1088,10 +1356,28 @@ function exportCSV() {
     "effort_axis",
     "hill_observation_id",
     "hill_group_id",
+    "gravity_only_power_w",
+    "gravity_total_mass_kg",
+    "gravity_net_gain_m",
+    "gravity_elevation_basis",
+    "gravity_estimate_status",
+    "minimum_input_power_w",
+    "kinetic_component_w",
+    "minimum_input_sensitivity_low_w",
+    "minimum_input_sensitivity_high_w",
+    "start_speed_estimate_m_s",
+    "end_speed_estimate_m_s",
+    "assumed_height_difference_error_m",
+    "assumed_endpoint_speed_error_m_s",
+    "windowed_minimum_average_w",
+    "windowed_minimum_supported_seconds",
+    "windowed_minimum_time_coverage",
   ];
   const rows = state.matches.map((m) => {
     const r = loaded.get(m.rideId),
-      s = state.stats.get(m.id);
+      s = state.stats.get(m.id),
+      gravity = gravityEstimate(m),
+      energy = state.energyEstimates.get(m.id);
     return [
       r.name,
       r.date,
@@ -1135,6 +1421,22 @@ function exportCSV() {
         ?.hillObservationId || "",
       comparisonWorkspace.active().entries.find((e) => e.id === m.id)
         ?.hillGroupId || "",
+      gravity.watts,
+      gravity.massKg,
+      gravity.netGainMeters,
+      gravity.basis,
+      gravity.reason || "Gravity-only estimate",
+      energy.minimumWatts,
+      energy.kineticWatts,
+      energy.lowerWatts,
+      energy.upperWatts,
+      energy.startSpeed,
+      energy.endSpeed,
+      state.settings.powerHeightErrorM,
+      state.settings.powerSpeedErrorMps,
+      state.energyProfiles.get(m.id).average?.watts,
+      state.energyProfiles.get(m.id).average?.supportedSeconds,
+      state.energyProfiles.get(m.id).average?.coverage,
     ]
       .map(csv)
       .join(",");
@@ -1160,6 +1462,63 @@ function settingsChanged() {
     300,
   );
 }
+$("gravity-masses").onsubmit = async (event) => {
+  event.preventDefault();
+  if ($("gravity-apply").disabled) return;
+  const c = comparisonWorkspace.active(),
+    previous = {
+      riderMassKg: state.settings.riderMassKg,
+      bikeMassKg: state.settings.bikeMassKg,
+      powerHeightErrorM: state.settings.powerHeightErrorM,
+      powerSpeedErrorMps: state.settings.powerSpeedErrorMps,
+    },
+    draft = [
+      $("gravity-rider").value,
+      $("gravity-bike").value,
+      $("power-height-error").value,
+      $("power-speed-error").value,
+    ],
+    factor = unit() === "imperial" ? 0.45359237 : 1;
+  try {
+    const masses = validateGravityMasses({
+      riderMassKg: draft[0].trim() ? Number(draft[0]) * factor : null,
+      bikeMassKg: draft[1].trim() ? Number(draft[1]) * factor : null,
+    });
+    const errors = validatePowerErrors({
+      powerHeightErrorM: draft[2].trim()
+        ? Number(draft[2]) / (unit() === "imperial" ? 3.28084 : 1)
+        : null,
+      powerSpeedErrorMps: draft[3].trim()
+        ? Number(draft[3]) / (unit() === "imperial" ? 2.236936 : 1)
+        : null,
+    });
+    Object.assign(state.settings, masses, errors);
+  } catch (error) {
+    $("gravity-status").textContent = error.message;
+    return;
+  }
+  $("gravity-apply").disabled = true;
+  $("gravity-apply").setAttribute("aria-busy", "true");
+  $("gravity-status").textContent = "Saving weights…";
+  try {
+    await comparisonWorkspace.save();
+    $("gravity-status").textContent = "Weights saved in this comparison.";
+    render();
+  } catch (error) {
+    Object.assign(state.settings, previous);
+    Object.assign(c.settings, previous);
+    render();
+    $("gravity-rider").value = draft[0];
+    $("gravity-bike").value = draft[1];
+    $("power-height-error").value = draft[2];
+    $("power-speed-error").value = draft[3];
+    $("gravity-status").textContent =
+      `Not saved: ${error.message}. Your weight entries are retained for retry.`;
+  } finally {
+    $("gravity-apply").disabled = false;
+    $("gravity-apply").setAttribute("aria-busy", "false");
+  }
+};
 for (const id of ["choose-files", "add-ride", "welcome-import"])
   $(id).onclick = () => $("files").click();
 $("files").onchange = (e) => imports([...e.target.files]);
@@ -1311,6 +1670,41 @@ $("budget-comparison").onchange = (e) => {
   renderBudget();
   comparisonWorkspace.soon();
 };
+$("plot-colors").onchange = (e) =>
+  changePlot((p) => {
+    p.colorMode = e.target.value;
+  });
+$("plot-all").onclick = () =>
+  changePlot((p) => {
+    p.hidden = [];
+  });
+$("plot-none").onclick = () =>
+  changePlot((p) => {
+    p.hidden = state.matches.map((m) => m.id);
+  });
+$("legend").onchange = (event) => {
+  const input = event.target.closest("[data-plot-entry]");
+  if (input)
+    changePlot((p) => {
+      p.hidden = input.checked
+        ? p.hidden.filter((id) => id !== input.dataset.plotEntry)
+        : [...new Set([...p.hidden, input.dataset.plotEntry])];
+    });
+};
+$("legend").onpointerover = (event) =>
+  highlightPlot(event.target.closest("[data-plot-key]")?.dataset.plotKey);
+$("legend").onpointerleave = () =>
+  highlightPlot(
+    document.activeElement?.closest?.("[data-plot-key]")?.dataset.plotKey,
+  );
+$("legend").addEventListener("focusin", (event) =>
+  highlightPlot(event.target.closest("[data-plot-key]")?.dataset.plotKey),
+);
+$("legend").addEventListener("focusout", (event) =>
+  highlightPlot(
+    event.relatedTarget?.closest?.("[data-plot-key]")?.dataset.plotKey,
+  ),
+);
 $("metric").onchange = (e) => {
   state.metric = e.target.value;
   renderComparison();
@@ -1494,6 +1888,8 @@ rideStory = createRideStory({
   },
 });
 hillLibrary = createHillLibrary({
+  applyHillBounds: (updates) => comparisonWorkspace.applyHillBounds(updates),
+  rangeSummary: (range) => comparisonWorkspace.rangeSummary(range),
   state,
   getRide,
   api,
@@ -1522,5 +1918,22 @@ hillLibrary = createHillLibrary({
       document.body.classList.remove("working");
     }
   },
+});
+mechanicalProfile = createGravityProfile({
+  host: $("gravity-profile"),
+  state,
+  getMatches: () => state.matches,
+  getProfile: (match) => state.energyProfiles.get(match.id),
+  getElevation: powerElevation,
+  name: (m) => `${rideName(m.rideId)} · pass ${m.pass}`,
+  esc,
+  onWindow(value) {
+    state.settings.gradeWindow = value;
+    settingsChanged();
+  },
+  onCursor: (point) => mainMap.highlight(point),
+});
+$("gravity-power").addEventListener("toggle", () => {
+  if ($("gravity-power").open) mechanicalProfile.render();
 });
 task("Loading your local workspace…", () => refresh(true));

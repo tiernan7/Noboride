@@ -561,6 +561,74 @@
             <div id="matches" class="table-scroll"></div>
             <p class="data-note" id="timing-note"></p>
             <div id="unmatched"></div>
+            <details id="gravity-power" class="gravity-power">
+              <summary>Minimum mechanical-input estimate</summary>
+              <p>
+                The average is time weighted from the local minimum-power curve.
+                The separate whole-range net bound uses only endpoint energy;
+                descents can cancel climbs, so it can be much smaller. Assumes
+                no motor, towing or propulsive wind; resistance losses are
+                omitted. Speeds use a smoothed speed channel, with distance/time
+                fallback when absent.
+              </p>
+              <form id="gravity-masses" class="plot-controls">
+                <label
+                  >Rider weight (<span data-mass-unit>lb</span>)<input
+                    id="gravity-rider"
+                    type="number"
+                    min="0.001"
+                    step="any"
+                    inputmode="decimal"
+                /></label>
+                <label
+                  >Bike + equipment weight (<span data-mass-unit>lb</span
+                  >)<input
+                    id="gravity-bike"
+                    type="number"
+                    min="0.001"
+                    step="any"
+                    inputmode="decimal"
+                /></label>
+                <label
+                  >Assumed net height error ± (<span id="power-height-unit"
+                    >ft</span
+                  >)<input
+                    id="power-height-error"
+                    type="number"
+                    min="0"
+                    step="any"
+                    inputmode="decimal"
+                    placeholder="Unknown"
+                /></label>
+                <button id="gravity-apply" type="submit" class="button small">
+                  Apply weights
+                </button>
+                <label
+                  >Assumed endpoint speed error ± (<span id="power-speed-unit"
+                    >mph</span
+                  >)<input
+                    id="power-speed-error"
+                    type="number"
+                    min="0"
+                    step="any"
+                    inputmode="decimal"
+                    placeholder="Unknown"
+                /></label>
+              </form>
+              <p id="gravity-status" role="status"></p>
+              <p id="gravity-basis" class="data-note"></p>
+              <div id="gravity-results" class="table-scroll"></div>
+              <div id="gravity-profile"></div>
+              <p class="data-note">
+                These are approximate energy-based lower bounds under the stated
+                assumptions, not measured crank power or FTP. Height/speed
+                errors, mass, interior alignment and wheel rotational energy
+                limit the result. Error ranges vary only your entered
+                assumptions; GPS accuracy is not measured here. Air/rolling
+                resistance and drivetrain losses are not modeled. Apply weights
+                also saves the optional error assumptions.
+              </p>
+            </details>
             <div class="chart-heading">
               <div>
                 <h3 id="comparison-chart-title">
@@ -588,11 +656,29 @@
                 <option value="hr">Heart rate</option>
                 <option value="cad">Cadence</option>
                 <option value="power">Recorded power</option>
+                <option value="minimumPower">Estimated minimum power</option>
                 <option value="grade">Grade</option>
                 <option value="delta">Time behind baseline</option>
               </select>
             </div>
             <div id="comparison-chart"></div>
+            <div class="plot-controls">
+              <label
+                >Line colors<select id="plot-colors">
+                  <option value="pass">Distinct passes</option>
+                  <option value="date">Date gradient · blue</option>
+                  <option value="date-gray">Date gradient · grayscale</option>
+                </select></label
+              >
+              <button id="plot-all" type="button" class="button small">
+                Show all passes
+              </button>
+              <button id="plot-none" type="button" class="text-button">
+                Hide all passes
+              </button>
+              <span id="plot-date-key" class="plot-date-key" hidden></span>
+            </div>
+            <p id="plot-visibility" class="data-note"></p>
             <div id="legend" class="legend"></div>
           </section>
           <section id="budget-panel" class="panel" hidden>

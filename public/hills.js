@@ -12,6 +12,8 @@ export function createHillLibrary({
   onCompare,
   onChange = () => {},
   getComparison,
+  applyHillBounds,
+  rangeSummary,
 }) {
   const $ = (id) => document.getElementById(id),
     selected = new Set();
@@ -39,6 +41,8 @@ export function createHillLibrary({
     esc,
     rideName,
     getRide,
+    applyHillBounds,
+    rangeSummary,
     saveLibrary: async (library) => {
       await api("/api/hills", json("PUT", library));
       stale = true;
@@ -271,6 +275,10 @@ export function createHillLibrary({
     ]);
     $("hill-bike-filter").parentElement.hidden = !bikes.length;
     summary.render(catalog);
+    hillComparison.refresh(hills()).catch((error) => {
+      $("hill-status").textContent =
+        `Hill plots could not refresh: ${error.message}`;
+    });
     if ($("hill-terrain-explorer").open) renderScatter(filtered());
   }
   async function load() {

@@ -1,4 +1,16 @@
 import { hillProfile } from "/hill-profile.mjs";
+import {
+  spreadOptions,
+  densityOptions,
+  spreadDescription,
+  hillChartDomain,
+  spreadMarkup,
+  describeSpread,
+  gradeColor,
+  hillGradeLegend,
+  hillLaneDefinitions,
+  hillRowControls,
+} from "/hill-chart.js";
 export function createHillSummary({
   host,
   state,
@@ -7,7 +19,7 @@ export function createHillSummary({
   rideName,
   onCompare,
 }) {
-  host.innerHTML = `<div class="hill-list-heading"><div><p class="eyebrow">SAVED HILL</p><h3>Your hill, across rides</h3></div><label>Hill<select id="hill-summary-select"></select></label></div><p id="hill-summary-empty" class="subtle">Save a named hill from a comparison to explore it here.</p><div id="hill-summary-body" hidden><div class="hill-summary-controls"><label>Colour and ride feature<select id="hill-summary-metric"><option value="grade">Gradient</option><option value="speed">Recorded speed</option><option value="hr">Heart rate</option><option value="power">Measured power</option></select></label><label>Horizontal axis<select id="hill-summary-axis"><option value="progress">Hill progress (%)</option><option value="distance">Mapped distance</option></select></label><button id="hill-summary-compare" class="button">Open passes in Comparisons →</button></div><p id="hill-summary-status" class="hill-muted" role="status"></p><svg id="hill-summary-profile" role="img" aria-label="Hill profile filled by mean grade or ride feature, with recording variation"></svg><p id="hill-summary-value" class="hill-muted"></p><details id="hill-summary-recordings"><summary>Included recordings <span id="hill-summary-recording-count"></span></summary><div class="hill-actions"><button id="hill-summary-all" class="text-button">Include all</button><button id="hill-summary-none" class="text-button">Exclude all</button></div><div id="hill-summary-sources"></div></details></div>`;
+  host.innerHTML = `<div class="hill-list-heading"><div><p class="eyebrow">SAVED HILL</p><h3>Your hill, across rides</h3></div><label>Hill<select id="hill-summary-select"></select></label></div><p id="hill-summary-empty" class="subtle">Save a named hill from a comparison to explore it here.</p><div id="hill-summary-body" hidden><div class="hill-summary-controls"><label>Horizontal axis<select id="hill-summary-axis"><option value="progress">Hill progress (%)</option><option value="distance">Mapped distance</option></select></label><label>Spread<select id="hill-summary-spread">${spreadOptions}</select></label><label id="hill-summary-density-control" hidden>Box density<select id="hill-summary-density">${densityOptions}</select></label><button id="hill-summary-compare" class="button">Open passes in Comparisons →</button></div><p id="hill-summary-status" class="hill-muted" role="status"></p><div id="hill-summary-rows" class="plot-controls" aria-label="Expand or collapse plot rows"></div><p id="hill-summary-power-note" class="data-note"></p><div class="overview-legend" id="hill-summary-grade-key">${hillGradeLegend}</div><svg id="hill-summary-profile" role="img" aria-label="Hill elevation filled by grade with stacked channel rows and recording variation"></svg><p id="hill-summary-spread-description" class="hill-muted"></p><p id="hill-summary-value" class="hill-muted"></p><details id="hill-summary-recordings"><summary>Included recordings <span id="hill-summary-recording-count"></span></summary><div class="hill-actions"><button id="hill-summary-all" class="text-button">Include all</button><button id="hill-summary-none" class="text-button">Exclude all</button></div><div id="hill-summary-sources"></div></details></div>`;
   const $ = (id) => host.querySelector(`#${id}`);
   let catalog,
     result,
@@ -16,6 +28,7 @@ export function createHillSummary({
     generation = 0,
     lastWidth = 0,
     exclusions = {};
+  const collapsed = new Set();
   try {
     exclusions = JSON.parse(
       localStorage.getItem("noboride-hill-summary-excluded") || "{}",
@@ -105,6 +118,7 @@ export function createHillSummary({
       result = hillProfile(observations, (id) => rides.get(id), null, {
         ...state.settings,
         includedObservationIds: included.map((o) => o.id),
+        includeMinimumPower: true,
       });
       key = next;
       const counts = result.profile
@@ -130,138 +144,126 @@ export function createHillSummary({
     const svg = $("hill-summary-profile"),
       W = Math.max(300, Math.round(svg.clientWidth || 900)),
       left = 52,
-      right = W - 20,
-      top = 28,
-      bottom = 208,
-      laneTop = 250,
-      laneBottom = 316,
-      metric = $("hill-summary-metric").value;
+      right = W - 20;
+    const spread = $("hill-summary-spread").value,
+      density = +$("hill-summary-density").value;
     lastWidth = W;
-    svg.setAttribute("viewBox", `0 0 ${W} 370`);
+    $("hill-summary-density-control").hidden = spread !== "box";
+    $("hill-summary-spread-description").textContent = spreadDescription(
+      spread,
+      density,
+    );
     if (!result?.profile.length || !result.passes.length) {
-      svg.innerHTML = `<text x="${W / 2}" y="130" text-anchor="middle">${members().length ? "Include a recording to view its mapped hill profile" : "No mapped terrain"}</text>`;
+      $("hill-summary-rows").innerHTML = "";
+      svg.setAttribute("viewBox", `0 0 ${W} 180`);
+      svg.innerHTML = `<text x="${W / 2}" y="100" text-anchor="middle">${members().length ? "Include a recording to view its mapped hill profile" : "No mapped terrain"}</text>`;
       return;
     }
-    const fields = result.profile.map((p) => p[metric]),
-      finite = fields.filter((p) => p.mean != null),
-      mMin = finite.reduce((a, b) => Math.min(a, b.min), Infinity),
-      mMax = finite.reduce((a, b) => Math.max(a, b.max), -Infinity),
-      metricFactor = metric === "speed" ? (imperial() ? 2.236936 : 3.6) : 1,
-      metricUnit =
-        metric === "grade"
-          ? "%"
-          : metric === "speed"
-            ? imperial()
-              ? "mph"
-              : "km/h"
-            : metric === "hr"
-              ? "bpm"
-              : "W";
-    const eles = result.profile.map((p) => p.ele).filter((p) => p.mean != null),
-      low = eles.reduce((a, b) => Math.min(a, b.min), 0),
-      high = eles.reduce((a, b) => Math.max(a, b.max), 1),
-      hFactor = imperial() ? 3.28084 : 1;
-    const x = (p) => left + p * (right - left),
-      y = (v) =>
-        bottom - ((v - low) / Math.max(1, high - low)) * (bottom - top),
-      my = (v) =>
-        laneBottom -
-        ((v - (finite.length ? Math.min(0, mMin) : 0)) /
-          Math.max(
-            1,
-            (finite.length ? mMax : 1) - Math.min(0, finite.length ? mMin : 0),
-          )) *
-          (laneBottom - laneTop);
-    const color = (v) =>
-      v == null
-        ? "#bec8d0"
-        : metric === "grade"
-          ? v >= 12
-            ? "#a676b8"
-            : v >= 9
-              ? "#d86d64"
-              : v >= 6
-                ? "#e5a16c"
-                : v >= 3
-                  ? "#d0c478"
-                  : "#a9c4b8"
-          : featureColor(v, mMin, mMax);
-    let fills = "",
-      fillStops = "",
-      fillArea = "",
-      areaStart = null,
-      areaEnd = null,
-      band = "",
-      trace = "",
-      feature = "",
-      featureBand = "",
-      down = false,
-      fDown = false;
-    result.profile.forEach((p, i) => {
-      if (p.ele.mean != null) {
-        trace += `${down ? "L" : "M"}${x(p.progress)},${y(p.ele.mean)} `;
-        down = true;
-      } else down = false;
-      if (p[metric].mean != null) {
-        feature += `${fDown ? "L" : "M"}${x(p.progress)},${my(p[metric].mean)} `;
-        fDown = true;
-      } else fDown = false;
-      if (!i) return;
-      const a = result.profile[i - 1];
-      if (a.ele.mean != null && p.ele.mean != null) {
-        const unknown = a[metric].mean == null || p[metric].mean == null,
-          startColor = color(
-            unknown
-              ? null
-              : metric === "grade"
-                ? p[metric].mean
-                : a[metric].mean,
-          ),
-          endColor = color(unknown ? null : p[metric].mean);
-        fillStops += `<stop data-summary-position="${i}" offset="${a.progress}" stop-color="${startColor}"/><stop offset="${p.progress}" stop-color="${endColor}"/>`;
-        band += `<path d="M${x(a.progress)},${y(a.ele.min)} L${x(p.progress)},${y(p.ele.min)} L${x(p.progress)},${y(p.ele.max)} L${x(a.progress)},${y(a.ele.max)} Z" fill="#546d7544"/>`;
-      }
-      if (a[metric].mean != null && p[metric].mean != null)
-        featureBand += `<path d="M${x(a.progress)},${my(a[metric].min)} L${x(p.progress)},${my(p[metric].min)} L${x(p.progress)},${my(p[metric].max)} L${x(a.progress)},${my(a[metric].max)} Z" fill="#647c9a25"/>`;
-    });
-    for (const p of result.profile) {
-      if (p.ele.mean != null) {
-        if (areaStart == null) {
-          areaStart = p;
-          fillArea += `M${x(p.progress)},${bottom} L${x(p.progress)},${y(p.ele.mean)} `;
-        } else fillArea += `L${x(p.progress)},${y(p.ele.mean)} `;
-        areaEnd = p;
-      } else if (areaStart) {
-        fillArea += `L${x(areaEnd.progress)},${bottom} Z `;
-        areaStart = null;
-      }
+    const available = hillLaneDefinitions(imperial()).filter(
+      (row) =>
+        row.key === "ele" ||
+        result.profile.some((p) => p[row.key]?.mean != null),
+    );
+    $("hill-summary-power-note").textContent = available.some(
+      (row) => row.key === "minimumPower",
+    )
+      ? `Estimated minimum power uses the current comparison weights and each pass’s own elevation over ${state.settings.gradeWindow} m. Resistance losses are omitted; actual pedalling power may be higher. It is separate from measured power.`
+      : "Estimated minimum power needs rider/equipment weights in Comparisons and supported elevation/speed data.";
+    $("hill-summary-rows").innerHTML = hillRowControls(
+      available,
+      collapsed,
+      "summary",
+    );
+    const rows = available.filter((row) => !collapsed.has(row.key));
+    if (!rows.length) {
+      svg.setAttribute("viewBox", `0 0 ${W} 80`);
+      svg.innerHTML = `<text x="${W / 2}" y="40" text-anchor="middle">Expand a plot row above</text>`;
+      return;
     }
-    if (areaStart) fillArea += `L${x(areaEnd.progress)},${bottom} Z`;
-    fills = `<defs><linearGradient id="hill-summary-fill-colors" gradientUnits="userSpaceOnUse" x1="${left}" x2="${right}">${fillStops}</linearGradient></defs><path data-summary-fill d="${fillArea}" fill="url(#hill-summary-fill-colors)" opacity=".85"/>`;
-    svg.innerHTML = `<text x="${left}" y="15">Relative elevation (${imperial() ? "ft" : "m"})</text>${[low, (low + high) / 2, high].map((v) => `<line x1="${left}" x2="${right}" y1="${y(v)}" y2="${y(v)}" stroke="#e2e8ee"/><text x="${left - 7}" y="${y(v) + 4}" text-anchor="end">${Math.round(v * hFactor)}</text>`).join("")}${fills}${band}<path d="${trace}" fill="none" stroke="#617a51" stroke-width="1.8" pointer-events="none"/><text x="${left}" y="239">${metric === "grade" ? "Gradient" : metric === "speed" ? "Recorded speed" : metric === "hr" ? "Heart rate" : "Measured power"} (${metricUnit}) · mean and across-ride range</text>${[
-      0, 0.5, 1,
-    ]
-      .filter(() => finite.length)
-      .map((f) => {
-        const v =
-          Math.min(0, finite.length ? mMin : 0) +
-          f *
-            Math.max(
-              1,
-              (finite.length ? mMax : 1) -
-                Math.min(0, finite.length ? mMin : 0),
-            );
-        return `<line x1="${left}" x2="${right}" y1="${my(v)}" y2="${my(v)}" stroke="#e2e8ee"/><text data-feature-y-tick x="${left - 7}" y="${my(v) + 4}" text-anchor="end">${(v * metricFactor).toFixed(metric === "speed" ? 1 : 0)}</text>`;
-      })
-      .join(
-        "",
-      )}${featureBand}${!finite.length ? `<text x="${(left + right) / 2}" y="285" text-anchor="middle">${metric === "power" ? "Measured power" : metric === "hr" ? "Heart rate" : metric === "speed" ? "Speed" : "Gradient"} not recorded for these sections</text>` : ""}${metric === "grade" && finite.length ? `<line x1="${left}" x2="${right}" y1="${my(0)}" y2="${my(0)}" stroke="#8b99a8" stroke-opacity=".4" stroke-dasharray="3 4"/>` : ""}<path d="${feature}" fill="none" stroke="#647c9a" stroke-width="1.8"/>${[0, 0.5, 1].map((f) => `<text x="${x(f)}" y="342" text-anchor="middle">${$("hill-summary-axis").value === "progress" ? `${Math.round(f * 100)}%` : `${(((result.length || 0) * f) / (imperial() ? 1609.344 : 1000)).toFixed(2)} ${imperial() ? "mi" : "km"}`}</text>`).join("")}<text x="${(left + right) / 2}" y="365" text-anchor="middle">${$("hill-summary-axis").value === "progress" ? "Mapped hill progress (%)" : `Mapped distance (${imperial() ? "mi" : "km"})`}</text><line id="hill-summary-hover" y1="${top}" y2="${laneBottom}" stroke="#53687e" opacity="0"/>`;
+    let next = 28;
+    for (const row of rows) {
+      row.top = next;
+      row.bottom = next + (row.key === "ele" ? 180 : 90);
+      next = row.bottom + 42;
+    }
+    const bottom = rows.at(-1).bottom,
+      H = bottom + 54,
+      x = (f) => left + f * (right - left);
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    let markup = "";
+    for (const row of rows) {
+      const fields = result.profile.map((p) => p[row.key]),
+        domain = hillChartDomain(fields, row.key, spread),
+        y = (v) =>
+          row.bottom -
+          ((v - domain.low) / (domain.high - domain.low)) *
+            (row.bottom - row.top),
+        central = (p) =>
+          spread === "box" ? p[row.key].median : p[row.key].mean;
+      let trace = "",
+        down = false;
+      for (const p of result.profile) {
+        const v = central(p);
+        if (v == null) {
+          down = false;
+          continue;
+        }
+        trace += `${down ? "L" : "M"}${x(p.progress)},${y(v)} `;
+        down = true;
+      }
+      let fill = "";
+      if (row.key === "ele") {
+        let area = "",
+          stops = "",
+          first = null,
+          last = null;
+        result.profile.forEach((p, i) => {
+          const v = central(p);
+          if (v == null) {
+            if (first) {
+              area += `L${x(last.progress)},${row.bottom} Z `;
+              first = null;
+            }
+            return;
+          }
+          if (!first) {
+            area += `M${x(p.progress)},${row.bottom} L${x(p.progress)},${y(v)} `;
+            first = p;
+          } else area += `L${x(p.progress)},${y(v)} `;
+          last = p;
+          if (i) {
+            const a = result.profile[i - 1],
+              unknown = a.grade.mean == null || p.grade.mean == null;
+            stops += `<stop data-summary-position="${i}" offset="${a.progress}" stop-color="${gradeColor(unknown ? null : p.grade.mean)}"/><stop offset="${p.progress}" stop-color="${gradeColor(unknown ? null : p.grade.mean)}"/>`;
+          }
+        });
+        if (first) area += `L${x(last.progress)},${row.bottom} Z`;
+        fill = `<defs><linearGradient id="hill-summary-fill-colors" gradientUnits="userSpaceOnUse" x1="${left}" x2="${right}">${stops}</linearGradient></defs><path data-summary-fill d="${area}" fill="url(#hill-summary-fill-colors)" opacity=".85"/>`;
+      }
+      const band = spreadMarkup(result.profile, row.key, {
+        mode: spread,
+        density,
+        boxWidth: Math.max(1, Math.min(10, (right - left) / (density * 1.7))),
+        x: (p) => x(p.progress),
+        y,
+        color: row.key === "ele" ? "#546d75" : "#647c9a",
+      });
+      markup += `<g id="summary-row-${row.key}" data-summary-row="${row.key}"><text x="${left}" y="${row.top - 12}">${row.label} (${row.unit})</text>${[
+        0, 0.5, 1,
+      ]
+        .map((f) => {
+          const v = domain.low + f * (domain.high - domain.low);
+          return `<line x1="${left}" x2="${right}" y1="${y(v)}" y2="${y(v)}" stroke="#e2e8ee"/><text data-feature-y-tick="${row.key}" x="${left - 7}" y="${y(v) + 4}" text-anchor="end">${(v * row.factor).toFixed(row.key === "speed" ? 1 : 0)}</text>`;
+        })
+        .join(
+          "",
+        )}${fill}${band}<path data-summary-line="${row.key}" d="${trace}" fill="none" stroke="${row.key === "ele" ? "#617a51" : "#647c9a"}" stroke-width="1.8"/>${row.key === "grade" ? `<line x1="${left}" x2="${right}" y1="${y(0)}" y2="${y(0)}" stroke="#8b99a8" stroke-opacity=".4" stroke-dasharray="3 4"/>` : ""}</g>`;
+    }
+    svg.innerHTML =
+      markup +
+      `${[0, 0.5, 1].map((f) => `<text x="${x(f)}" y="${bottom + 24}" text-anchor="middle">${$("hill-summary-axis").value === "progress" ? `${Math.round(f * 100)}%` : `${(((result.length || 0) * f) / (imperial() ? 1609.344 : 1000)).toFixed(2)} ${imperial() ? "mi" : "km"}`}</text>`).join("")}<text x="${(left + right) / 2}" y="${bottom + 49}" text-anchor="middle">${$("hill-summary-axis").value === "progress" ? "Mapped hill progress (%)" : `Mapped distance (${imperial() ? "mi" : "km"})`}</text><line id="hill-summary-hover" y1="${rows[0].top}" y2="${bottom}" stroke="#53687e" opacity="0"/>`;
     $("hill-summary-value").textContent =
-      metric === "grade"
-        ? "Fill: green <3%, yellow 3–6%, orange 6–9%, red 9–12%, purple ≥12%. Gray means not recorded. The band shows across-ride range, not a confidence interval."
-        : finite.length
-          ? `Fill: ${(mMin * metricFactor).toFixed(1)} ${metricUnit} blue → ${(mMax * metricFactor).toFixed(1)} ${metricUnit} orange (scale for this hill and included recordings). Gray means not recorded. The band shows across-ride range.`
-          : "Gray fill: selected feature not recorded. Recording coverage does not change the fill colour.";
+      "Elevation fill always shows grade. Hover a plot row to inspect its values; use the row buttons to collapse or expand it.";
     svg.onpointermove = (event) => {
       const box = svg.getBoundingClientRect(),
         f = Math.max(
@@ -272,22 +274,44 @@ export function createHillSummary({
               (right - left),
           ),
         ),
-        p = result.profile[Math.round(f * 100)],
-        value = p[metric],
+        localY = ((event.clientY - box.top) / box.height) * H,
+        row = rows.reduce(
+          (best, r) =>
+            Math.abs(localY - (r.top + r.bottom) / 2) <
+            Math.abs(localY - (best.top + best.bottom) / 2)
+              ? r
+              : best,
+          rows[0],
+        ),
+        p = result.profile[Math.round(f * (result.profile.length - 1))],
+        value = p[row.key],
         cursor = $("hill-summary-hover");
       cursor.setAttribute("x1", x(f));
       cursor.setAttribute("x2", x(f));
       cursor.setAttribute("opacity", ".5");
       $("hill-summary-value").textContent =
-        `${Math.round(f * 100)}% of mapped hill · ${value.mean == null ? "not recorded" : `${(value.mean * metricFactor).toFixed(1)} ${metricUnit} (range ${(value.min * metricFactor).toFixed(1)}–${(value.max * metricFactor).toFixed(1)})`} · ${value.rides} rides contributing`;
+        `${row.label} · ${$("hill-summary-axis").value === "distance" ? `${((f * result.length) / (imperial() ? 1609.344 : 1000)).toFixed(2)} ${imperial() ? "mi" : "km"} into mapped hill` : `${Math.round(f * 100)}% of mapped hill`} · ${describeSpread(value, spread, row.factor, row.unit)} · ${value.rides} rides contributing`;
     };
+    svg.onpointerleave = () =>
+      $("hill-summary-hover").setAttribute("opacity", "0");
   }
+  $("hill-summary-rows").onclick = (event) => {
+    const button = event.target.closest("[data-summary-toggle]");
+    if (!button) return;
+    const id = button.dataset.summaryToggle;
+    collapsed.has(id) ? collapsed.delete(id) : collapsed.add(id);
+    draw();
+    $("hill-summary-rows")
+      .querySelector(`[data-summary-toggle="${id}"]`)
+      ?.focus({ preventScroll: true });
+  };
   $("hill-summary-select").onchange = () => {
     key = "";
     load();
   };
-  $("hill-summary-metric").onchange = draw;
   $("hill-summary-axis").onchange = draw;
+  $("hill-summary-spread").onchange = draw;
+  $("hill-summary-density").onchange = draw;
   $("hill-summary-sources").onchange = (event) => {
     const input = event.target.closest("[data-summary-member]");
     if (!input) return;
@@ -337,19 +361,4 @@ export function createHillSummary({
       load();
     },
   };
-}
-
-// Interpolate through a neutral midpoint instead of sweeping the hue wheel.
-// Equal values always have the same colour regardless of recording coverage.
-function featureColor(value, min, max) {
-  const f =
-      max > min ? Math.max(0, Math.min(1, (value - min) / (max - min))) : 0.5,
-    stops = [
-      [65, 120, 178],
-      [213, 218, 222],
-      [214, 124, 60],
-    ],
-    part = f <= 0.5 ? 0 : 1,
-    fraction = f <= 0.5 ? f * 2 : (f - 0.5) * 2;
-  return `rgb(${stops[part].map((a, i) => Math.round(a + (stops[part + 1][i] - a) * fraction)).join(" ")})`;
 }

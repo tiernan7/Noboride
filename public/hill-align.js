@@ -201,6 +201,8 @@ export function createHillAlignment({
       end: +$("hill-align-end").value,
     };
     if (candidate.start >= candidate.end) {
+      $("hill-align-range").textContent =
+        "Invalid hill range; distance and elapsed time unavailable.";
       $("hill-align-status").textContent = "Start must come before end.";
       return;
     }
@@ -212,7 +214,7 @@ export function createHillAlignment({
       return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
     };
     $("hill-align-range").textContent =
-      `${(stats.distance / (state.settings.units === "imperial" ? 1609.344 : 1000)).toFixed(2)} ${state.settings.units === "imperial" ? "mi" : "km"} · ${clock(points[0].t)}–${clock(points.at(-1).t)} into ride`;
+      `Hill draft: ${(stats.distance / (state.settings.units === "imperial" ? 1609.344 : 1000)).toFixed(2)} ${state.settings.units === "imperial" ? "mi" : "km"} · elapsed ${Math.floor(Math.round(stats.elapsed) / 60)}:${String(Math.round(stats.elapsed) % 60).padStart(2, "0")} · ${clock(points[0].t)}–${clock(points.at(-1).t)} into ride. ${candidate.start === value.comparisonStart && candidate.end === value.comparisonEnd ? "Same bounds as comparison timing." : "Differs from comparison timing; save the hill, then use Apply saved hill bounds to comparison to update its analysis."}`;
     const other = value.others.filter((o) => o.id !== candidate.id),
       all = [...other, candidate],
       rides = new Map(
