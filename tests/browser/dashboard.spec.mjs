@@ -93,7 +93,7 @@ test("dashboard imports, matches, edits, exports, backs up and works on mobile",
   await page.locator("#start-coordinate").fill(`${p.lat}, ${p.lon}`);
   await page.locator("#snap-start").click();
   await expect(page.locator("#start-range")).toHaveValue("430");
-  const box = await page.locator("#profile .profile-svg").boundingBox();
+  const box = await page.locator("#story-charts .story-traces").boundingBox();
   await page.mouse.move(box.x + box.width * 0.6, box.y + box.height * 0.5);
   await page.mouse.down();
   await page.mouse.move(box.x + box.width * 0.86, box.y + box.height * 0.5, {
@@ -234,10 +234,8 @@ test("one stretch editor preserves selections and explicitly updates only the ch
     "Already in comparison",
   );
   await expect(page.locator("#add-stretch")).toBeDisabled();
-  await expect(
-    page.locator("#source-stretches [data-source-entry]"),
-  ).toHaveCount(1);
-  await expect(page.locator("#profile [data-saved-range]")).toHaveCount(1);
+  await expect(page.locator("#climb-tree [data-source-entry]")).toHaveCount(1);
+  await expect(page.locator("#story-charts [data-saved-range]")).toHaveCount(1);
   await expect(page.locator("#map .saved-stretch-route")).toHaveCount(1);
   await page.locator('[data-source-ride="demo-1"]').click();
   await settled(page);
@@ -247,10 +245,14 @@ test("one stretch editor preserves selections and explicitly updates only the ch
     .click();
   await settled(page);
   await expect(page.locator("#selection-context")).toContainText(
-    "Editing stretch 1",
+    "Editing section 1",
   );
-  await expect(page.locator("#add-stretch")).toHaveText("Update stretch");
+  await expect(page.locator("#add-stretch")).toHaveText("Save changes");
   await expect(page.locator("#add-stretch")).toBeDisabled();
+  await expect(page.locator("#add-stretch")).toHaveCSS("cursor", "not-allowed");
+  await expect(page.locator("#selection-context")).toContainText(
+    "No changes to save",
+  );
   await selectRange(page, 110, 200);
   await expect(page.locator("#matches tbody tr")).toHaveCount(2);
   workspace = await (await request.get("/api/workspace")).json();
@@ -266,7 +268,7 @@ test("one stretch editor preserves selections and explicitly updates only the ch
   await page.locator("#add-stretch").click();
   await settled(page);
   await expect(page.locator("#stretch-status")).toHaveText(
-    "Stretch updated in this comparison.",
+    "Section saved in this comparison.",
   );
   workspace = await (await request.get("/api/workspace")).json();
   expect(workspace.comparisons.items[0].entries).toHaveLength(2);
@@ -295,6 +297,7 @@ test("one stretch editor preserves selections and explicitly updates only the ch
   await page.locator("#comparison-entries [data-entry-remove]").click();
   await settled(page);
   await expect(page.locator("#new-comparison")).toBeDisabled();
+  await page.locator("#climb-new").click();
   await selectRange(page, 1, 2);
   await page.locator("#add-stretch").click();
   await settled(page);
@@ -651,6 +654,8 @@ test("comparison contexts name, switch, retain multiple stretches and restore an
     }, value);
   await page.locator("#add-stretch").click();
   await settled(page);
+  await page.locator("#another-stretch").click();
+  await settled(page);
   for (const [id, value] of [
     ["start-range", 20],
     ["end-range", 100],
@@ -817,23 +822,17 @@ test("a second lap of the same recording is suggested as a separate comparison e
   await page.locator("#include-missing-rides").click();
   await settled(page);
   await expect(page.locator("#matches tbody tr")).toHaveCount(2);
-  await expect(
-    page.locator("#source-stretches [data-source-entry]"),
-  ).toHaveCount(2);
-  await expect(page.locator("#profile [data-saved-range]")).toHaveCount(2);
+  await expect(page.locator("#climb-tree [data-source-entry]")).toHaveCount(2);
+  await expect(page.locator("#story-charts [data-saved-range]")).toHaveCount(2);
   await expect(page.locator("#map .saved-stretch-route")).toHaveCount(2);
   await page.reload();
   await settled(page);
-  await expect(
-    page.locator("#source-stretches [data-source-entry]"),
-  ).toHaveCount(2);
-  await expect(page.locator("#profile [data-saved-range]")).toHaveCount(2);
+  await expect(page.locator("#climb-tree [data-source-entry]")).toHaveCount(2);
+  await expect(page.locator("#story-charts [data-saved-range]")).toHaveCount(2);
   await page
     .locator(".studio")
     .screenshot({ path: "artifacts/saved-stretches-desktop.png" });
-  const savedCard = page
-    .locator("#source-stretches [data-source-entry]")
-    .last();
+  const savedCard = page.locator("#climb-tree [data-source-entry]").last();
   await savedCard.scrollIntoViewIfNeeded();
   const scrollBefore = await page.evaluate(() => window.scrollY);
   await savedCard.click();
@@ -845,19 +844,17 @@ test("a second lap of the same recording is suggested as a separate comparison e
     Number(await page.locator("#start-range").inputValue()),
   ).toBeGreaterThan(600);
   await expect(
-    page.locator("#source-stretches [aria-pressed=true]"),
+    page.locator("#climb-tree [data-source-entry][aria-pressed=true]"),
   ).toHaveCount(1);
-  await expect(page.locator("#add-stretch")).toHaveText("Update stretch");
+  await expect(page.locator("#add-stretch")).toHaveText("Save changes");
   await page.locator("#another-stretch").click();
   await settled(page);
   await expect(page.locator("#start-range")).toHaveValue("0");
   await selectRange(page, 20, 100);
   await page.locator("#add-stretch").click();
   await settled(page);
-  await expect(
-    page.locator("#source-stretches [data-source-entry]"),
-  ).toHaveCount(3);
-  await expect(page.locator("#profile [data-saved-range]")).toHaveCount(3);
+  await expect(page.locator("#climb-tree [data-source-entry]")).toHaveCount(3);
+  await expect(page.locator("#story-charts [data-saved-range]")).toHaveCount(3);
   const updated = await (await request.get("/api/workspace")).json();
   expect(updated.comparisons.items[0].entries.slice(0, 2)).toEqual(entries);
 });

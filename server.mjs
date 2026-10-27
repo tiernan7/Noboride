@@ -5,12 +5,22 @@ import { fileURLToPath } from "node:url";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { randomUUID } from "node:crypto";
 import { Store } from "./lib/store.mjs";
+import {
+  validateGravityMasses,
+  validatePowerErrors,
+} from "./lib/gravity-power.mjs";
 import { databasePath } from "./lib/paths.mjs";
 import { validateComparisons } from "./lib/comparisons.mjs";
 import { parseUpload, normalizeRide } from "./lib/import.mjs";
 import { makeDemo } from "./lib/demo.mjs";
 import { DEFAULTS } from "./lib/analysis.mjs";
 import { validateClimbEdits } from "./lib/ride-story.mjs";
+import {
+  buildHillObservations,
+  validateHillLibrary,
+  pruneHillLibrary,
+  validateSavedHillObservations,
+} from "./lib/hills.mjs";
 import { serverHost, allowedAuthorities } from "./lib/network.mjs";
 const ROOT = fileURLToPath(new URL(".", import.meta.url)),
   PORT = Number(process.env.PORT || 4317),
@@ -21,6 +31,13 @@ const authorities = allowedAuthorities(HOST, PORT);
 const origins = new Set([...authorities].map((host) => `http://${host}`));
 const dbPath = databasePath(ROOT);
 const store = new Store(dbPath);
+let hillCatalog = null;
+const readHillCatalog = (library = store.hillLibrary()) =>
+  buildHillObservations(
+    store.list().map((ride) => store.get(ride.id)),
+    library.observations || [],
+  );
+const hillObservations = () => (hillCatalog ??= readHillCatalog());
 function send(res, status, value) {
   const b = Buffer.from(JSON.stringify(value));
   res.writeHead(status, {
@@ -61,6 +78,8 @@ function validSettings(v) {
     }
   }
   out.units = v.units === "metric" ? "metric" : "imperial";
+  Object.assign(out, validateGravityMasses(v));
+  Object.assign(out, validatePowerErrors(v));
   return out;
 }
 function validSegment(v) {
@@ -130,6 +149,23 @@ async function api(req, res, path) {
     store.saveComparisons(value);
     return send(res, 200, value);
   }
+  if (method === "GET" && path === "/api/hills")
+    return send(res, 200, {
+      observations: hillObservations(),
+      library: store.hillLibrary(),
+    });
+  if (method === "PUT" && path === "/api/hills") {
+    const input = JSON.parse((await readBody(req, 2 * 1024 * 1024)).toString());
+    const observations = validateSavedHillObservations(
+      input.observations ?? store.hillLibrary().observations ?? [],
+      (id) => store.get(id),
+    );
+    const nextCatalog = readHillCatalog({ observations });
+    const value = validateHillLibrary({ ...input, observations }, nextCatalog);
+    store.saveHillLibrary(value);
+    hillCatalog = nextCatalog;
+    return send(res, 200, value);
+  }
   if (method === "GET" && path.startsWith("/api/rides/")) {
     const r = store.get(path.slice(11));
     return send(res, r ? 200 : 404, r || { error: "Ride not found." });
@@ -150,6 +186,7 @@ async function api(req, res, path) {
         else duplicates++;
       }
     });
+    hillCatalog = null;
     return send(res, 200, {
       imported,
       duplicates,
@@ -166,6 +203,7 @@ async function api(req, res, path) {
       if (!store.segments().some((s) => s.id === "demo-hill"))
         demo.segments.forEach((s) => store.saveSegment(s));
     });
+    hillCatalog = null;
     return send(res, 200, { ok: true });
   }
   if (method === "PUT" && path === "/api/settings") {
@@ -217,6 +255,7 @@ async function api(req, res, path) {
       );
       if (climbEdits) store.climbEdits(ride.id, climbEdits);
     });
+    hillCatalog = null;
     return send(res, 200, { ok: true });
   }
   if (method === "DELETE" && path.startsWith("/api/rides/")) {
@@ -231,6 +270,8 @@ async function api(req, res, path) {
         "This ride is used in a comparison. Remove its comparison stretches first.",
       );
     for (const c of comparisons.items) {
+      if (c.sections)
+        c.sections = c.sections.filter((section) => section.rideId !== id);
       c.selected = c.selected.filter((rideId) => rideId !== id);
       c.drafts = (c.drafts || []).filter((d) => d.rideId !== id);
       c.matchDecisions = (c.matchDecisions || []).filter(
@@ -241,7 +282,11 @@ async function api(req, res, path) {
     store.transaction(() => {
       store.remove(id);
       store.saveComparisons(comparisons);
+      store.saveHillLibrary(
+        pruneHillLibrary(store.hillLibrary(), readHillCatalog()),
+      );
     });
+    hillCatalog = null;
     return send(res, 200, { ok: true });
   }
   if (method === "GET" && path === "/api/backup") {
@@ -252,6 +297,7 @@ async function api(req, res, path) {
       segments: store.segments(),
       settings: store.settings(),
       comparisons: store.comparisons(),
+      hillLibrary: store.hillLibrary(),
     };
     res.writeHead(200, {
       "Content-Type": "application/gzip",
@@ -345,7 +391,12 @@ async function api(req, res, path) {
           .filter(
             (c) =>
               !incoming.items.some((x) => x.id === c.id) &&
-              !(incoming.items.length && !c.name && !c.entries.length),
+              !(
+                incoming.items.length &&
+                !c.name &&
+                !c.entries.length &&
+                !c.sections?.length
+              ),
           )
           .concat(incoming.items);
         store.saveComparisons(
@@ -356,7 +407,37 @@ async function api(req, res, path) {
           ),
         );
       }
+      if (v.hillLibrary !== undefined) {
+        const current = store.hillLibrary(),
+          saved = validateSavedHillObservations(
+            v.hillLibrary.observations || [],
+            (id) => store.get(id),
+          ),
+          mergedSaved = (current.observations || [])
+            .filter((o) => !saved.some((other) => other.id === o.id))
+            .concat(saved),
+          observations = readHillCatalog({ observations: mergedSaved }),
+          incoming = validateHillLibrary(
+            { ...v.hillLibrary, observations: saved },
+            observations,
+          );
+        store.saveHillLibrary(
+          validateHillLibrary(
+            {
+              ...(mergedSaved.length ? { observations: mergedSaved } : {}),
+              groups: current.groups
+                .filter(
+                  (group) =>
+                    !incoming.groups.some((other) => other.id === group.id),
+                )
+                .concat(incoming.groups),
+            },
+            observations,
+          ),
+        );
+      }
     });
+    hillCatalog = null;
     return send(res, 200, { imported });
   }
   send(res, 404, { error: "Endpoint not found." });
@@ -371,6 +452,16 @@ const staticFiles = {
   "/ride-story.mjs": "lib/ride-story.mjs",
   "/ride-story.js": "public/ride-story.js",
   "/match-review.js": "public/match-review.js",
+  "/hills.js": "public/hills.js",
+  "/hill-publish.js": "public/hill-publish.js",
+  "/hill-summary.js": "public/hill-summary.js",
+  "/hill-chart.js": "public/hill-chart.js",
+  "/gravity-power.mjs": "lib/gravity-power.mjs",
+  "/gravity-profile.js": "public/gravity-profile.js",
+  "/hill-compare.js": "public/hill-compare.js",
+  "/hill-align.js": "public/hill-align.js",
+  "/hill-profile.mjs": "lib/hill-profile.mjs",
+  "/hills.mjs": "lib/hills.mjs",
   "/leaflet.js": "node_modules/leaflet/dist/leaflet.js",
   "/leaflet.css": "node_modules/leaflet/dist/leaflet.css",
 };

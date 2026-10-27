@@ -134,6 +134,115 @@ test("focused ride windows retain both approach and aftermath and use elapsed re
     end: 160,
   });
 });
+test("comparison sections support fractional GPS endpoints and deleted suggestions do not reappear", () => {
+  const points = stairs();
+  const original = detectClimbs(points).find((node) => node.kind === "hill");
+  const sections = [
+    {
+      ...original,
+      name: "Kept endpoints",
+      start: original.start + 0.5,
+      end: original.end - 0.5,
+    },
+  ];
+  const selected = detectClimbs(points, sections).find(
+    (node) => node.id === original.id,
+  );
+  assert.equal(selected.length, 390);
+  assert.equal(selected.startTime, 21000);
+  assert.ok(Math.abs(selected.netGain - 31.2) < 1e-10);
+  const hidden = detectClimbs(points, [{ ...sections[0], deleted: true }]);
+  assert.ok(!hidden.some((node) => node.id === original.id));
+  assert.ok(hidden.some((node) => node.kind === "ramp"));
+  const sameRange = detectClimbs(points, [
+    { ...sections[0], id: "custom", manual: true },
+  ]);
+  assert.equal(
+    sameRange.filter((node) => node.kind === "hill" && node.start < 50).length,
+    1,
+  );
+  assert.ok(sameRange.some((node) => node.id === "custom"));
+});
+test("manual terrain nests by containment, reparents after edits, and leaves partial overlaps independent", () => {
+  const points = stairs();
+  const edits = validateClimbEdits(
+    [
+      {
+        id: "manual-hill",
+        kind: "hill",
+        name: "Smaller first step",
+        start: 15,
+        end: 49,
+        manual: true,
+      },
+      {
+        id: "manual-ramp",
+        kind: "ramp",
+        name: "Inside step",
+        start: 20,
+        end: 30,
+        manual: true,
+      },
+      {
+        id: "manual-overlap",
+        kind: "hill",
+        name: "Crosses two hills",
+        start: 40,
+        end: 70,
+        manual: true,
+      },
+      {
+        id: "manual-passage",
+        kind: "passage",
+        name: "Whole staircase",
+        start: 0,
+        end: 160,
+        manual: true,
+      },
+    ],
+    points,
+  );
+  const nodes = detectClimbs(points, edits);
+  const get = (id) => nodes.find((n) => n.id === id);
+  assert.equal(get("manual-hill").parentId, "passage-10-150");
+  assert.equal(get("manual-ramp").parentId, "manual-hill");
+  assert.equal(get("manual-overlap").parentId, "passage-10-150");
+  assert.equal(get("manual-passage").parentId, "");
+  assert.equal(get("manual-hill").manual, true);
+  assert.equal(get("manual-hill").corrected, false);
+  const missingElevation = detectClimbs(
+    points.map((p) => ({ ...p, ele: null })),
+    edits,
+  );
+  assert.equal(missingElevation.length, 4);
+  assert.equal(
+    missingElevation.find((n) => n.id === "manual-ramp").parentId,
+    "manual-hill",
+  );
+  assert.ok(missingElevation.every((n) => n.netGain === null));
+  const moved = detectClimbs(
+    points,
+    edits.map((n) =>
+      n.id === "manual-ramp" ? { ...n, start: 70, end: 80 } : n,
+    ),
+  );
+  assert.equal(
+    moved.find((n) => n.id === "manual-ramp").parentId,
+    "hill-60-100",
+  );
+  const removed = detectClimbs(
+    points,
+    edits.filter((n) => n.id !== "manual-hill"),
+  );
+  assert.equal(
+    removed.find((n) => n.id === "manual-ramp").parentId,
+    "hill-10-50",
+  );
+  assert.throws(
+    () => validateClimbEdits([{ ...edits[0], manual: "yes" }], points),
+    /boundaries/,
+  );
+});
 test("route inspection exposes parallel offsets and direction without translating either track", () => {
   const reference = stairs(),
     candidate = reference.map((p) => ({
