@@ -1575,6 +1575,19 @@ export function createComparisonWorkspace({
     previewHill,
     applyHillBounds,
     rangeSummary,
+    contexts: () =>
+      collection.items.map((c) =>
+        c.id === active()?.id ? { ...c, settings: { ...state.settings } } : c,
+      ),
+    includeRides,
+    async openProgressEntry(contextId, entryId) {
+      if (active()?.id !== contextId) await navigate(contextId);
+      if (active()?.id !== contextId) return false;
+      if (!active().entries.some((e) => e.id === entryId))
+        throw new Error("This saved pass no longer exists.");
+      await editEntry(entryId, { scroll: false });
+      return true;
+    },
     hasEfforts: () =>
       active()?.roadPending ||
       active()?.mode === "terrain" ||

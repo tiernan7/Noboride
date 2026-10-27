@@ -87,9 +87,20 @@
         >
           Hills
         </button>
+        <button
+          id="progress-tab"
+          class="button"
+          aria-pressed="false"
+          aria-controls="progress-view"
+        >
+          Progress <small>Prototype</small>
+        </button>
       </nav>
       <section id="hills-view" hidden aria-label="Hill library">
         <div id="hills-content"></div>
+      </section>
+      <section id="progress-view" hidden aria-label="Progress prototype">
+        <div id="progress-content" class="panel"></div>
       </section>
       <details id="import-report" class="report" hidden>
         <summary id="report-title"></summary>

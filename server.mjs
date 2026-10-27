@@ -458,6 +458,8 @@ const staticFiles = {
   "/hill-chart.js": "public/hill-chart.js",
   "/gravity-power.mjs": "lib/gravity-power.mjs",
   "/gravity-profile.js": "public/gravity-profile.js",
+  "/progress.js": "public/progress.js",
+  "/progress.mjs": "lib/progress.mjs",
   "/hill-compare.js": "public/hill-compare.js",
   "/hill-align.js": "public/hill-align.js",
   "/hill-profile.mjs": "lib/hill-profile.mjs",

@@ -2618,3 +2618,37 @@ dialog > p {
 #hill-publish {
   scroll-margin-top: 90px;
 }
+
+.progress-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.progress-summary {
+  font-weight: 600;
+  margin: 12px 0;
+}
+#progress-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  font-size: 11px;
+  fill: #688099;
+}
+#progress-chart [data-progress-point] {
+  cursor: pointer;
+}
+#progress-chart [data-progress-point]:focus circle,
+#progress-chart [data-progress-point]:hover circle {
+  stroke: #172b42;
+  stroke-width: 3;
+}
+#progress-passes td {
+  vertical-align: top;
+}
+#progress-passes td:nth-last-child(2) {
+  min-width: 180px;
+  max-width: 350px;
+  overflow-wrap: anywhere;
+}

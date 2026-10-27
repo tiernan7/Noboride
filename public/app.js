@@ -24,6 +24,7 @@ import {
   validatePowerErrors,
 } from "/gravity-power.mjs";
 import { createGravityProfile } from "/gravity-profile.js";
+import { createProgress } from "/progress.js";
 const $ = (id) => document.getElementById(id),
   esc = (v) =>
     String(v ?? "").replace(
@@ -63,6 +64,7 @@ let comparisonWorkspace,
   rideStory,
   hillLibrary,
   mechanicalProfile,
+  progressView,
   rideRename = null;
 let settingsTimeout;
 const ref = () => loaded.get(state.referenceId),
@@ -380,16 +382,20 @@ function render() {
   rideStory?.render();
   renderHillGuidance();
   hillLibrary?.render();
+  progressView?.refresh();
 }
 async function showView(view) {
   $("comparisons-view").hidden = view !== "comparisons";
   $("hills-view").hidden = view !== "hills";
+  $("progress-view").hidden = view !== "progress";
+  $("progress-tab").setAttribute("aria-pressed", String(view === "progress"));
   $("comparisons-tab").setAttribute(
     "aria-pressed",
     String(view === "comparisons"),
   );
   $("hills-tab").setAttribute("aria-pressed", String(view === "hills"));
   if (view === "hills") await hillLibrary.open();
+  else if (view === "progress") await progressView.open();
   else render();
 }
 function renderHillGuidance() {
@@ -1717,6 +1723,7 @@ $("effort-axis").onchange = (event) => {
 };
 $("comparisons-tab").onclick = () => showView("comparisons");
 $("hills-tab").onclick = () => showView("hills");
+$("progress-tab").onclick = () => showView("progress");
 $("hill-guidance").onclick = async (event) => {
   const summaryButton = event.target.closest("[data-open-hills]");
   if (summaryButton) {
@@ -1935,5 +1942,24 @@ mechanicalProfile = createGravityProfile({
 });
 $("gravity-power").addEventListener("toggle", () => {
   if ($("gravity-power").open) mechanicalProfile.render();
+});
+progressView = createProgress({
+  host: $("progress-content"),
+  state,
+  contexts: () => comparisonWorkspace.contexts(),
+  getActiveId: () => comparisonWorkspace.active()?.id,
+  getRide,
+  esc,
+  onComparisons: () => showView("comparisons"),
+  onOpen: (contextId, entryId) =>
+    task("Opening progress pass…", async () => {
+      await showView("comparisons");
+      await comparisonWorkspace.openProgressEntry(contextId, entryId);
+    }),
+  onInclude: (rideId) =>
+    task("Including progress ride…", async () => {
+      await comparisonWorkspace.includeRides([rideId]);
+      comparisonWorkspace.soon();
+    }),
 });
 task("Loading your local workspace…", () => refresh(true));
